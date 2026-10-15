@@ -13,7 +13,7 @@ COLS = {"Person": "person", "Status": "status", "Deadline": "date_mm7ytd1z", "No
 
 def task(**kw):
     base = {"title": "Fix sink", "details": "Kitchen sink leaks.", "assignee_ids": [11], "country": "Canada",
-            "deadline": "", "source_channel": "C1", "source_ts": "1760000000.000100"}
+            "deadline": "", "source": "slack", "source_conversation": "C1", "source_message": "1760000000.000100"}
     base.update(kw)
     return base
 
@@ -50,10 +50,47 @@ class TranscriptTests(unittest.TestCase):
         with mock.patch.object(s, "slack_paged", side_effect=self.fake_paged):
             lines, count = s.channel_transcript({"id": "C1"}, USERS, checkpoint=200.0, now=400.0)
         self.assertEqual(count, 2)
-        self.assertTrue(lines[0].startswith("[context] ts=100.0"))
-        self.assertTrue(lines[1].startswith("[context] ts=150.0"))
-        self.assertIn("reply [NEW] ts=250.0", lines[2])
-        self.assertTrue(lines[3].startswith("[NEW] ts=300.0"))
+        self.assertTrue(lines[0].startswith("[context] id=100.0"))
+        self.assertTrue(lines[1].startswith("[context] id=150.0"))
+        self.assertIn("reply [NEW] id=250.0", lines[2])
+        self.assertTrue(lines[3].startswith("[NEW] id=300.0"))
+
+
+class GuestTranscriptTests(unittest.TestCase):
+    res = {"id": "R1", "code": "HM1", "platform": "airbnb", "check_in": "2026-10-10T16:00:00-04:00",
+           "check_out": "2026-10-20T10:00:00-04:00", "guest": {"first_name": "Brent", "last_name": "McKenzie"},
+           "properties": [{"id": "P1"}]}
+    messages = {"data": [  # Hospitable returns newest first
+        {"id": 4, "created_at": "2026-10-15T12:13:21Z", "sender_type": "host", "source": "public_api",
+         "author": None, "sender": {"full_name": "Mohamed A"}, "body": "Thanks, it's all set."},
+        {"id": 3, "created_at": "2026-10-15T12:10:15Z", "sender_type": "guest", "source": "platform",
+         "body": "The dishwasher\nis leaking.", "attachments": [{"url": "x"}]},
+        {"id": 2, "created_at": "2026-10-14T09:00:00Z", "sender_type": "host", "source": "automated",
+         "body": "Check-in reminder"},
+        {"id": 1, "created_at": "2026-10-14T00:18:44Z", "sender_type": "host", "source": "AI",
+         "author": {"name": "Ivy Monteagudo"}, "body": "Rescheduled for Thursday."},
+    ]}
+
+    def test_transcript(self):
+        checkpoint = s.iso_ts("2026-10-15T12:00:00Z")
+        with mock.patch.object(s, "hospitable", return_value=self.messages):
+            lines, count = s.guest_transcript(self.res, {}, checkpoint, now=checkpoint + 3600)
+        self.assertEqual(count, 2)
+        self.assertEqual(len(lines), 3)  # automated reminder dropped
+        self.assertIn("[context] id=1", lines[0])
+        self.assertIn("Ivy Monteagudo (host): Rescheduled", lines[0])
+        self.assertIn("[NEW] id=3", lines[1])
+        self.assertIn("Brent McKenzie (guest): The dishwasher is leaking. [1 attachment(s)]", lines[1])
+        self.assertIn("Mohamed A (host)", lines[2])
+
+    def test_property_and_header(self):
+        props = {"P1": {"name": "600 Sarnia Rd", "country": "Canada"}}
+        prop = s.reservation_property(self.res, props)
+        self.assertEqual(prop["country"], "Canada")
+        header = s.guest_header(self.res, prop)
+        self.assertIn("source hospitable, conversation id R1", header)
+        self.assertIn("Brent McKenzie at 600 Sarnia Rd (Canada)", header)
+        self.assertEqual(s.reservation_property({"properties": []}, props)["country"], "Unknown")
 
 
 class MondayValueTests(unittest.TestCase):
@@ -70,9 +107,14 @@ class MondayValueTests(unittest.TestCase):
         self.assertNotIn("date_mm7ytd1z", vals)
 
     def test_notes_carry_source_key(self):
-        notes = s.build_notes(task(details="x" * 5000), "https://t.slack.com/archives/C1/p1760000000000100")
+        notes = s.build_notes(task(details="x" * 5000), "Slack: https://t.slack.com/archives/C1/p1760000000000100")
         self.assertLessEqual(len(notes), s.NOTES_LIMIT)
-        self.assertEqual(s.SOURCE_KEY_RE.findall(notes), [("C1", "1760000000.000100")])
+        self.assertEqual(s.SOURCE_KEY_RE.findall(notes), [("slack", "C1", "1760000000.000100")])
+
+    def test_hospitable_source_key(self):
+        notes = s.build_notes(task(source="hospitable", source_conversation="c83b8b9d-0992-4fa9", source_message="1303734654"),
+                              "Hospitable: Brent McKenzie at 600 Sarnia Rd, reservation HMRX95F3M4")
+        self.assertEqual(s.SOURCE_KEY_RE.findall(notes), [("hospitable", "c83b8b9d-0992-4fa9", "1303734654")])
 
     def test_permalink(self):
         self.assertEqual(s.permalink_for("https://insta.slack.com/", "C1", "1760000000.000100"),

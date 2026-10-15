@@ -1,11 +1,13 @@
 # Task Management
 
-Every **5 minutes**, this workflow reads new Slack messages, finds the tasks in them, and adds them to monday.com assigned to the right person.
+Every **5 minutes**, this workflow reads new Slack messages and guest conversations, finds the tasks in them, and adds them to monday.com assigned to the right person.
 
-1. **Read:** picks up new messages and new thread replies since the last run in every Slack channel the bot has been invited to.
+1. **Read:** picks up everything new since the last run:
+   - **Slack:** new messages and thread replies in every channel the bot has been invited to.
+   - **Hospitable:** new messages in every guest conversation (reservations from 6 months ago to a year ahead). Templated automated messages are left out.
 2. **Find:** Claude reads the conversation and picks out real tasks (things someone was asked to do, agreed to do, or clearly needs to do). It skips chit-chat, FYIs, work that's already done, and tasks already open on the boards. For each task it decides:
    - **who** should do it (whoever was asked, @-tagged, or said "I'll do it"),
-   - **USA or Canada**, from the property, city, or channel (it's given both Properties Master lists),
+   - **USA or Canada**, from the property, city, or channel (it's given both Properties Master lists). Guest conversations always go to the country of the reservation's property.
    - a **deadline**, if one was mentioned ("by Friday", "tomorrow").
 3. **Add:** creates the task on the **Daily Tasks** board of the matching workspace:
 
@@ -20,7 +22,9 @@ Each new item goes in the **Other task** group with:
 - **Person:** the assignee. monday notifies them.
 - **Status:** Not done.
 - **Deadline:** when one was mentioned.
-- **Notes/Updates:** the details, a link to the Slack message, and a `[slack <channel> <ts>]` key. The key stops the same message from ever creating a second item.
+- **Notes/Updates:** the details, where it came from (a link to the Slack message, or the guest, property and reservation code), and a `[slack …]` or `[hospitable …]` key. The key stops the same message from ever creating a second item.
+
+From guest conversations, Claude picks out work the team has to do for the stay: repairs, missing items, supplies, cleaning, laundry, early check-in or late checkout to arrange, refunds or charges, complaints to follow up, and anything a host reply promised. Questions the host already fully answered (wifi, parking, directions) are skipped.
 
 If a task can't be tied to a country, it goes on the Canada board. Change `DEFAULT_COUNTRY` in the workflow to change this.
 
@@ -44,10 +48,11 @@ Add these in **Settings → Secrets and variables → Actions**:
 |---|---|
 | `SLACK_BOT_TOKEN` | Bot token from step 1 |
 | `MONDAY_API_TOKEN` | monday.com → avatar → Developers → My access tokens |
+| `HOSPITABLE_API_TOKEN` | Hospitable → Apps → API access → personal access token (read access is enough). Without it, guest conversations are skipped. |
 | `ANTHROPIC_API_KEY` | Claude API key from console.anthropic.com |
 | `ANTHROPIC_WORKSPACE_ID` | Only needed if the API key isn't scoped to a workspace |
 
-You can reuse the monday and Anthropic values from the Review-Automation / Review-Response repos.
+You can reuse the monday, Hospitable and Anthropic values from the Review-Automation / Review-Response repos.
 
 ## Running
 
@@ -79,7 +84,7 @@ GitHub's own timer often runs late or skips runs. A free cron service starts the
 
 Leave `"dry_run":"false"` in the request body. Without it, manual runs default to a dry run and create nothing.
 
-The time of the last run is stored in the GitHub Actions cache (`slack-state-*`). If the cache is cleared, the next run reads the last `FIRST_RUN_HOURS` again. The Slack key in each item's notes stops anything already added from being added twice.
+The time of the last run is stored in the GitHub Actions cache (`slack-state-*`), separately for Slack and Hospitable. If Hospitable is down, guest conversations are retried on the next run, and Slack carries on. If the cache is cleared, the next run reads the last `FIRST_RUN_HOURS` again. The Slack key in each item's notes stops anything already added from being added twice.
 
 ## Tests
 
