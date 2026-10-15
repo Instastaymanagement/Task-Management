@@ -511,14 +511,8 @@ def read_quo(checkpoint, now, seen_calls):
             continue
         convos = quo_pages("/conversations", {"phoneNumbers": [line["id"]], "maxResults": 100,
                                               "updatedAfter": iso_z(checkpoint - QUO_CALL_LAG)})
-        n_convos = 0
         for convo in convos:
-            n_convos += 1
             lines, new_count, calls = quo_transcript(line, convo, checkpoint, now, seen_calls)
-            if DRY_RUN and n_convos <= 3 and os.environ.get("GITHUB_ACTIONS"):
-                log(f"::notice title=Quo debug {line['country']}::convo updatedAt={convo.get('updatedAt')} "
-                    f"lastActivityAt={convo.get('lastActivityAt')} participants={len(convo.get('participants') or [])} "
-                    f"entries={len(lines)} new={new_count} keys={sorted(convo)[:12]}")
             handled |= calls
             if not new_count:
                 continue
@@ -528,8 +522,6 @@ def read_quo(checkpoint, now, seen_calls):
             new_total += new_count
             info[convo["id"]] = {"country": line["country"], "label": f"{who} on the {line['country']} Quo line"}
             log(f"Quo {line['country']} line, {who}: {new_count} new")
-        if DRY_RUN and os.environ.get("GITHUB_ACTIONS"):
-            log(f"::notice title=Quo debug {line['country']}::{n_convos} conversation(s) updated since {iso_z(checkpoint - QUO_CALL_LAG)}")
     return transcripts, new_total, info, handled
 
 
