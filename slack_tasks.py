@@ -690,9 +690,9 @@ def main():
     state = load_state(STATE_FILE)
     checkpoint = float(state.get("checkpoint") or now - FIRST_RUN_HOURS * 3600)
     h_checkpoint = float(state.get("hospitable_checkpoint") or checkpoint)
+    q_checkpoint = float(state.get("quo_checkpoint") or checkpoint)
     if os.environ.get("LOOKBACK_HOURS"):
         checkpoint = h_checkpoint = q_checkpoint = now - float(os.environ["LOOKBACK_HOURS"]) * 3600
-    q_checkpoint = float(state.get("quo_checkpoint") or checkpoint)
     seen_calls = set(state.get("quo_seen_calls") or [])
     new_state = {"checkpoint": now, "hospitable_checkpoint": h_checkpoint,
                  "quo_checkpoint": q_checkpoint, "quo_seen_calls": sorted(seen_calls)}
