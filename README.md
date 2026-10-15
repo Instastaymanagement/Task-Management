@@ -56,6 +56,29 @@ You can reuse the monday and Anthropic values from the Review-Automation / Revie
 - **First run:** reads the last 2 hours (`FIRST_RUN_HOURS`).
 - **Only some channels:** set `SLACK_CHANNELS` in `.github/workflows/slack-tasks.yml`, e.g. `"maintenance,cleaning-ops,team"`.
 
+### Exact 5-minute runs (external cron)
+
+GitHub's own timer often runs late or skips runs. A free cron service starts the workflow every 5 minutes through GitHub's API. The GitHub timer stays on as a backup. If two runs overlap, the second waits for the first, and a Slack message never creates more than one task.
+
+1. **GitHub token:** GitHub → avatar → Settings → Developer settings → Personal access tokens → **Fine-grained tokens** → Generate new token.
+   - Resource owner: **Instastaymanagement**
+   - Repository access: **Only select repositories** → Task-Management
+   - Permissions → Repository → **Actions: Read and write** (nothing else)
+   - Expiration: up to 1 year. Put a reminder in your calendar to renew it.
+2. **cron-job.org:** sign up for free, then **Create cronjob**:
+   - URL: `https://api.github.com/repos/Instastaymanagement/Task-Management/actions/workflows/slack-tasks.yml/dispatches`
+   - Schedule: every 5 minutes
+   - Advanced → Request method: **POST**
+   - Advanced → Headers:
+     - `Authorization: Bearer <your token>`
+     - `Accept: application/vnd.github+json`
+     - `Content-Type: application/json`
+     - `X-GitHub-Api-Version: 2022-11-28`
+   - Advanced → Request body: `{"ref":"main","inputs":{"dry_run":"false"}}`
+3. Click **Test run**. A good response is **204 No Content**, and a new run appears under Actions within a few seconds.
+
+Leave `"dry_run":"false"` in the request body. Without it, manual runs default to a dry run and create nothing.
+
 The time of the last run is stored in the GitHub Actions cache (`slack-state-*`). If the cache is cleared, the next run reads the last `FIRST_RUN_HOURS` again. The Slack key in each item's notes stops anything already added from being added twice.
 
 ## Tests
