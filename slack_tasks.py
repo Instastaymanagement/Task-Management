@@ -404,7 +404,9 @@ def quo(path, params=None):
     url = f"{QUO_API}{path}"
     if params:
         url += "?" + urllib.parse.urlencode(params, doseq=True)
-    return http_json(url, headers={"Authorization": os.environ["QUO_API_KEY"], "Accept": "application/json"})
+    # Quo's firewall rejects Python's default User-Agent, so name the client.
+    return http_json(url, headers={"Authorization": os.environ["QUO_API_KEY"], "Accept": "application/json",
+                                   "User-Agent": "Instastay-Task-Management/1.0"})
 
 
 def quo_pages(path, params, limit=None):
