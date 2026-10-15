@@ -22,7 +22,8 @@ Each new item goes in the **Other task** group with:
 - **Name:** a short description of the task.
 - **Person:** the assignee. monday notifies them.
 - **Status:** Not done.
-- **Deadline:** when one was mentioned.
+- **Property Link:** the property the task is about, linked to its row in that workspace's Properties Master. Guest tasks link through the property's Hospitable ID; for Slack and Quo, Claude picks the property from the Properties Master list.
+- **Deadline:** always set. A date given in the conversation is used as is. Otherwise Claude sets one from urgency: today for problems affecting a staying guest or safety; the day before the next check-in for turnover work; 1–2 days for replies, laundry, deliveries and payments; 3–7 days for routine maintenance and purchases; up to 2 weeks for admin and licensing.
 - **Notes/Updates:** the details, where it came from (a link to the Slack message, or the guest, property and reservation code), and a `[slack …]` or `[hospitable …]` key. The key stops the same message from ever creating a second item.
 
 From guest conversations, Claude picks out work the team has to do for the stay: repairs, missing items, supplies, cleaning, laundry, early check-in or late checkout to arrange, refunds or charges, complaints to follow up, and anything a host reply promised. Questions the host already fully answered (wifi, parking, directions) are skipped.

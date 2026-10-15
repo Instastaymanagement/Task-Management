@@ -5,13 +5,15 @@
    - every Slack channel the bot has been added to (including thread replies), and
    - every Hospitable guest conversation with new activity, and
    - every Quo text conversation on the mapped Quo numbers (calls are not read).
-2. Has Claude pick out the actionable tasks, who should do them, any deadline,
-   and whether each one belongs to the USA or the Canada portfolio (guest
+2. Has Claude pick out the actionable tasks, who should do them, which property
+   each is for, a deadline that fits its urgency, and whether each one belongs to
+   the USA or the Canada portfolio (guest
    conversations go to the country of their property, Quo conversations to the
    country of the Quo number).
 3. Creates each task on the "Daily Tasks" board of the matching monday.com
    workspace (USA Automated / Canada Automated), in the "Other task" group,
-   with the person assigned so monday notifies them.
+   with the person assigned so monday notifies them and the property linked
+   to its row in that workspace's Properties Master.
 
 Each item's Notes carry a "[slack <channel> <ts>]" or
 "[hospitable <reservation> <message id>]" or "[quo <conversation> <message id>]" key for the message the task came from. That key is checked before creating anything, so overlapping or
@@ -42,6 +44,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from zoneinfo import ZoneInfo
 
 import anthropic
 
@@ -63,6 +66,8 @@ DRY_RUN = os.environ.get("DRY_RUN", "").lower() in ("1", "true", "yes")
 STATE_FILE = os.environ.get("STATE_FILE") or "state/slack_state.json"
 FIRST_RUN_HOURS = float(os.environ.get("FIRST_RUN_HOURS") or 2)
 DEFAULT_COUNTRY = os.environ.get("DEFAULT_COUNTRY") or "Canada"
+LOCAL_TZ = ZoneInfo("America/Toronto")  # London ON and Boston share Eastern time
+DEFAULT_DEADLINE_DAYS = 3                # used only if Claude's date can't be read
 THREAD_LOOKBACK_DAYS = 3   # thread replies are picked up on parents up to this old
 CONTEXT_MESSAGES = 15      # earlier messages per channel shown to Claude for context
 GUEST_CONTEXT_MESSAGES = 20  # latest messages per guest conversation shown to Claude
@@ -100,7 +105,14 @@ Rules:
 - details: one to three sentences with what is needed and any specifics from the conversation (amounts, times, guest names, unit numbers). Don't invent anything.
 - assignee_ids: the monday user ids of the people who should do it, chosen from the team list. Use whoever was asked or tagged (@name), or who said they would do it. If nobody can be identified, return an empty list. Never assign a guest.
 - country: "USA" or "Canada". For guest and Quo conversations use the country in the conversation header. For Slack, use the property, city, or channel; if you can't tell, return "Unknown".
-- deadline: YYYY-MM-DD if a date or relative day ("tomorrow", "by Friday") is given, resolved against the message date; otherwise an empty string.
+- property_ids: the Properties Master ids (from the property lists) of the properties the task is about, in the same country as the task. Match street names, nicknames and unit numbers loosely ("Sarnia" = "600 Sarnia Rd"). For guest conversations it is the reservation's property. Empty list if no property is involved (e.g. office or admin work).
+- deadline: always a date, YYYY-MM-DD, never empty. If the conversation gives a date or relative day ("tomorrow", "by Friday"), use it, resolved against the message date. Otherwise set it from how urgent the task is and what kind of task it is, counting from today:
+  - Today: anything affecting a guest who is staying now (no heat, no hot water, leak, lockout, broken appliance, missing essentials), safety issues, and anything that must happen before a check-in later today.
+  - Before the next check-in: cleaning, restocking, repairs or setup needed before an arriving guest; use the day before check-in (or today if check-in is tomorrow).
+  - Within 1-2 days: replies owed to owners, guests or vendors, laundry, deliveries, refunds and payments, small repairs at occupied properties.
+  - Within 3-7 days: routine maintenance at empty properties, purchases, scheduling contractors, follow-ups with no time pressure.
+  - Within 2 weeks: admin, documents, licensing, listings, improvements.
+  Never set a date before today.
 - source, source_conversation and source_message: copy the source and conversation id from the conversation header, and the id of the [NEW] message the task comes from, exactly as shown.
 
 If there are no tasks, return an empty list."""
@@ -117,12 +129,13 @@ OUTPUT_SCHEMA = {
                     "details": {"type": "string"},
                     "assignee_ids": {"type": "array", "items": {"type": "integer"}},
                     "country": {"type": "string", "enum": ["USA", "Canada", "Unknown"]},
+                    "property_ids": {"type": "array", "items": {"type": "integer"}},
                     "deadline": {"type": "string"},
                     "source": {"type": "string", "enum": ["slack", "hospitable", "quo"]},
                     "source_conversation": {"type": "string"},
                     "source_message": {"type": "string"},
                 },
-                "required": ["title", "details", "assignee_ids", "country", "deadline",
+                "required": ["title", "details", "assignee_ids", "country", "property_ids", "deadline",
                              "source", "source_conversation", "source_message"],
                 "additionalProperties": False,
             },
@@ -344,8 +357,8 @@ def guest_name(res):
 def reservation_property(res, props):
     for p in res.get("properties") or []:
         if p.get("id") in props:
-            return props[p["id"]]
-    return {"name": "unknown property", "country": "Unknown"}
+            return {**props[p["id"]], "id": p["id"]}
+    return {"name": "unknown property", "country": "Unknown", "id": None}
 
 
 def guest_transcript(res, prop, checkpoint, now):
@@ -390,7 +403,7 @@ def read_hospitable(checkpoint, now):
             continue
         transcripts.append((guest_header(res, prop), lines))
         new_total += new_count
-        info[res["id"]] = {"country": prop["country"],
+        info[res["id"]] = {"country": prop["country"], "hospitable_property_id": prop["id"],
                            "label": f"{guest_name(res)} at {prop['name']}, reservation {res.get('code') or res['id']}"}
         log(f"Guest {guest_name(res)} at {prop['name']}: {new_count} new message(s)")
     return transcripts, new_total, info
@@ -539,17 +552,52 @@ def load_board(country):
             "group_id": groups.get(TASK_GROUP), "keys": keys, "open_tasks": open_tasks}
 
 
-def property_names(country):
-    board_id = WORKSPACES[country]["properties_board"]
-    data = monday("query($id:[ID!]){boards(ids:$id){items_page(limit:500){items{name}}}}", {"id": [board_id]})
-    return [it["name"] for it in data["boards"][0]["items_page"]["items"]]
+def property_catalog(country):
+    """Properties Master rows: [{"id", "name", "address", "hospitable_id"}]."""
+    cols, _ = board_layout(WORKSPACES[country]["properties_board"])
+    wanted = {t: cols[t] for t in ("Address", "Hospitable ID", "Hospitable Name") if t in cols}
+    rows = []
+    for it in board_items(WORKSPACES[country]["properties_board"], list(wanted.values())):
+        if (it.get("group") or {}).get("title", "").lower().startswith("inactive"):
+            continue
+        vals = {c["id"]: (c["text"] or "").strip() for c in it["column_values"]}
+        rows.append({"id": int(it["id"]), "name": it["name"],
+                     "address": vals.get(wanted.get("Address"), "") or vals.get(wanted.get("Hospitable Name"), ""),
+                     "hospitable_id": vals.get(wanted.get("Hospitable ID"), "")})
+    return rows
 
 
-def column_values(task, cols, valid_user_ids, notes):
+def local_today(now):
+    return dt.datetime.fromtimestamp(now, LOCAL_TZ).date()
+
+
+def clean_deadline(value, today):
+    """Claude's deadline as a date string, never in the past; a few days out if it can't be read."""
+    try:
+        day = dt.date.fromisoformat((value or "").strip())
+    except ValueError:
+        day = today + dt.timedelta(days=DEFAULT_DEADLINE_DAYS)
+    return max(day, today).isoformat()
+
+
+def task_properties(task, country, catalog, hospitable_property_id=None):
+    """Properties Master item ids for a task: the reservation's property for guest tasks, else Claude's pick."""
+    rows = catalog.get(country) or []
+    if hospitable_property_id:
+        match = [r["id"] for r in rows if r["hospitable_id"] == hospitable_property_id]
+        if match:
+            return match[:1]
+    valid = {r["id"] for r in rows}
+    return [i for i in dict.fromkeys(task.get("property_ids") or []) if i in valid]
+
+
+def column_values(task, cols, valid_user_ids, notes, property_ids=()):
     vals = {
         cols["Status"]: {"label": NEW_STATUS},
         cols["Notes/Updates"]: notes,
     }
+    if property_ids and "Property Link" in cols:
+        vals[cols["Property Link"]] = {"item_ids": list(property_ids)}
     people = [i for i in dict.fromkeys(task["assignee_ids"]) if i in valid_user_ids]
     if people:
         vals[cols["Person"]] = {"personsAndTeams": [{"id": i, "kind": "person"} for i in people]}
@@ -564,8 +612,8 @@ def build_notes(task, source_line):
     return task["details"].strip()[: NOTES_LIMIT - len(tail)] + tail
 
 
-def create_item(board, task, valid_user_ids, source_line):
-    vals = column_values(task, board["cols"], valid_user_ids, build_notes(task, source_line))
+def create_item(board, task, valid_user_ids, source_line, property_ids=()):
+    vals = column_values(task, board["cols"], valid_user_ids, build_notes(task, source_line), property_ids)
     data = monday("""mutation($board:ID!, $group:String, $name:String!, $vals:JSON!){
         create_item(board_id:$board, group_id:$group, item_name:$name, column_values:$vals){id}}""",
                   {"board": board["board_id"], "group": board["group_id"], "name": task["title"][:255],
@@ -585,10 +633,14 @@ def team_list(m_users, s_users):
     return "\n".join(lines)
 
 
-def build_prompt(transcripts, team, properties, open_tasks, now):
-    parts = [f"Current time: {fmt_ts(now)}", "", "Team (monday users you can assign):", team, ""]
-    for country, names in properties.items():
-        parts.append(f"{country} properties: " + ("; ".join(names) or "(none listed)"))
+def build_prompt(transcripts, team, catalog, open_tasks, now):
+    local = dt.datetime.fromtimestamp(now, LOCAL_TZ)
+    parts = [f"Current time: {fmt_ts(now)} ({local.strftime('%A %Y-%m-%d %H:%M')} Eastern). "
+             f"Today is {local.date().isoformat()}.", "", "Team (monday users you can assign):", team, ""]
+    for country, rows in catalog.items():
+        parts.append(f"{country} properties (Properties Master id: name, address):")
+        parts += [f"- {r['id']}: {r['name']}" + (f", {r['address']}" if r["address"] else "") for r in rows] or ["(none listed)"]
+        parts.append("")
     parts += ["", "Open tasks already on the boards (don't add these again):",
               "\n".join(open_tasks[-300:]) or "(none)", "", "Conversations:"]
     for header, lines in transcripts:
@@ -715,14 +767,15 @@ def main():
     boards = {c: load_board(c) for c in WORKSPACES}
     m_users = monday_users()
     valid_ids = {u["id"] for u in m_users}
-    properties = {c: property_names(c) for c in WORKSPACES}
+    catalog = {c: property_catalog(c) for c in WORKSPACES}
+    today = local_today(now)
     open_tasks = boards["USA"]["open_tasks"] + boards["Canada"]["open_tasks"]
 
     workspace_id = os.environ.get("ANTHROPIC_WORKSPACE_ID", "").strip()
     client = anthropic.Anthropic(
         default_headers={"anthropic-workspace-id": workspace_id} if workspace_id else None,
     )
-    prompt = build_prompt(transcripts, team_list(m_users, s_users), properties, open_tasks, now)
+    prompt = build_prompt(transcripts, team_list(m_users, s_users), catalog, open_tasks, now)
     tasks = extract_tasks(client, prompt)
     log(f"Claude found {len(tasks)} task(s)")
 
@@ -739,8 +792,12 @@ def main():
                  else quo_convos.get(task["source_conversation"]) if task["source"] == "quo" else None)
         country = guest["country"] if guest and guest["country"] in WORKSPACES else task["country"]
         country = country if country in WORKSPACES else DEFAULT_COUNTRY
+        task["deadline"] = clean_deadline(task.get("deadline"), today)
+        prop_ids = task_properties(task, country, catalog, (guest or {}).get("hospitable_property_id"))
+        prop_names = {r["id"]: r["name"] for r in catalog.get(country) or []}
+        where = ", ".join(prop_names[i] for i in prop_ids) or "no property"
         who = ", ".join(names.get(i, str(i)) for i in task["assignee_ids"] if i in valid_ids) or "unassigned"
-        label = f"[{country}] {task['title']} -> {who}" + (f" (due {task['deadline']})" if task["deadline"] else "")
+        label = f"[{country}] {task['title']} @ {where} -> {who} (due {task['deadline']})"
         if DRY_RUN:
             log(f"~ {label}\n    {task['details']}")
             report.append(f"WOULD ADD {label}")
@@ -752,7 +809,7 @@ def main():
         else:
             link = permalink_for(team_url, task["source_conversation"], task["source_message"])
             source_line = f"Slack: {link}" if link else ""
-        item_id = create_item(boards[country], task, valid_ids, source_line)
+        item_id = create_item(boards[country], task, valid_ids, source_line, prop_ids)
         created += 1
         log(f"+ {label} (item {item_id})")
         report.append(f"ADDED {label}")

@@ -124,6 +124,36 @@ class QuoTests(unittest.TestCase):
         self.assertIn("+15195551234: The furnace is making noise", lines[1])
 
 
+class PropertyAndDeadlineTests(unittest.TestCase):
+    catalog = {"Canada": [{"id": 501, "name": "600 Sarnia Rd", "address": "", "hospitable_id": "H-SARNIA"},
+                          {"id": 502, "name": "1494 Commissioners Rd", "address": "", "hospitable_id": "H-COMM"}],
+               "USA": [{"id": 601, "name": "22 Euston", "address": "", "hospitable_id": "H-EUSTON"}]}
+
+    def test_guest_task_uses_reservation_property(self):
+        ids = s.task_properties(task(property_ids=[501]), "Canada", self.catalog, "H-COMM")
+        self.assertEqual(ids, [502])
+
+    def test_claude_pick_is_checked_against_country(self):
+        self.assertEqual(s.task_properties(task(property_ids=[501, 601, 501]), "Canada", self.catalog), [501])
+        self.assertEqual(s.task_properties(task(property_ids=[]), "USA", self.catalog), [])
+
+    def test_unknown_hospitable_property_falls_back_to_claude(self):
+        self.assertEqual(s.task_properties(task(property_ids=[501]), "Canada", self.catalog, "H-NEW"), [501])
+
+    def test_deadline(self):
+        today = s.dt.date(2026, 10, 15)
+        self.assertEqual(s.clean_deadline("2026-10-17", today), "2026-10-17")
+        self.assertEqual(s.clean_deadline("2026-10-01", today), "2026-10-15")  # never in the past
+        self.assertEqual(s.clean_deadline("", today), "2026-10-18")
+        self.assertEqual(s.clean_deadline("soon", today), "2026-10-18")
+
+    def test_property_link_value(self):
+        cols = {**COLS, "Property Link": "board_relation_x"}
+        vals = s.column_values(task(), cols, {11}, "n", [502])
+        self.assertEqual(vals["board_relation_x"], {"item_ids": [502]})
+        self.assertNotIn("board_relation_x", s.column_values(task(), cols, {11}, "n", []))
+
+
 class MondayValueTests(unittest.TestCase):
     def test_column_values(self):
         vals = s.column_values(task(assignee_ids=[11, 11, 99], deadline="2026-10-20"), COLS, {11, 12}, "notes")
