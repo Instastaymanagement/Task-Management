@@ -390,6 +390,24 @@ def extract_tasks(client, prompt):
 
 # --------------------------------------------------------------------------- main
 
+def annotate(title, lines, chunk_chars=3500, max_chunks=9):
+    """Post the report as run annotations (GitHub cuts each one at ~4 KB, so split it)."""
+    if not os.environ.get("GITHUB_ACTIONS") or not lines:
+        return
+    chunks, current = [], ""
+    for line in lines:
+        if current and len(current) + len(line) + 1 > chunk_chars:
+            chunks.append(current)
+            current = ""
+        current += line + "\n"
+    if current:
+        chunks.append(current)
+    for i, chunk in enumerate(chunks[:max_chunks], 1):
+        body = chunk.rstrip().replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+        suffix = f" ({i}/{len(chunks)})" if len(chunks) > 1 else ""
+        log(f"::notice title={title}{suffix}::{body}")
+
+
 def permalink_for(team_url, channel_id, ts):
     return f"{team_url.rstrip('/')}/archives/{channel_id}/p{ts.replace('.', '')}" if team_url else ""
 
@@ -447,7 +465,7 @@ def main():
 
     seen = boards["USA"]["keys"] | boards["Canada"]["keys"]
     names = {u["id"]: u["name"] for u in m_users}
-    created = 0
+    created, report = 0, []
     for task in tasks:
         key = (task["source_channel"], task["source_ts"])
         if key in seen:
@@ -459,15 +477,20 @@ def main():
         label = f"[{country}] {task['title']} -> {who}" + (f" (due {task['deadline']})" if task["deadline"] else "")
         if DRY_RUN:
             log(f"~ {label}\n    {task['details']}")
+            report.append(f"WOULD ADD {label}")
             continue
         item_id = create_item(boards[country], task, valid_ids,
                               permalink_for(team_url, task["source_channel"], task["source_ts"]))
         created += 1
         log(f"+ {label} (item {item_id})")
+        report.append(f"ADDED {label}")
 
     if not DRY_RUN:
         save_state(STATE_FILE, {"checkpoint": now})
-    log(f"\nDone. Created {created} task(s).")
+    summary = (f"{new_total} new message(s), {len(tasks)} task(s) found, "
+               f"{len(tasks) - len(report)} already on monday, {created} created")
+    log(f"\nDone. {summary}")
+    annotate(f"Slack tasks{' (dry run)' if DRY_RUN else ''}", [summary, *report])
 
 
 if __name__ == "__main__":

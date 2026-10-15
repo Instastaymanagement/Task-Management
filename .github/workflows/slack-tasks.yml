@@ -37,7 +37,7 @@ jobs:
 
       # The last-run checkpoint lives in the Actions cache between runs.
       - name: Restore checkpoint
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: state
           key: slack-state-${{ github.run_id }}
@@ -59,7 +59,7 @@ jobs:
 
       - name: Save checkpoint
         if: success() && hashFiles('state/slack_state.json') != ''
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: state
           key: slack-state-${{ github.run_id }}
