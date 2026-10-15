@@ -24,6 +24,7 @@ Environment:
   DRY_RUN               "true" to log the tasks without creating them or moving the checkpoint
   STATE_FILE            where the last-run checkpoint is kept (default state/slack_state.json)
   FIRST_RUN_HOURS       how far back to read when there is no checkpoint yet (default 2)
+  LOOKBACK_HOURS        read this many hours back instead of from the checkpoint (for manual re-scans)
   SLACK_CHANNELS        optional comma-separated channel names to limit the scan to
   DEFAULT_COUNTRY       board to use when a task can't be tied to a country (default Canada)
 """
@@ -544,6 +545,8 @@ def main():
     state = load_state(STATE_FILE)
     checkpoint = float(state.get("checkpoint") or now - FIRST_RUN_HOURS * 3600)
     h_checkpoint = float(state.get("hospitable_checkpoint") or checkpoint)
+    if os.environ.get("LOOKBACK_HOURS"):
+        checkpoint = h_checkpoint = now - float(os.environ["LOOKBACK_HOURS"]) * 3600
     new_state = {"checkpoint": now, "hospitable_checkpoint": h_checkpoint}
     log(f"Reading Slack messages since {fmt_ts(checkpoint)}")
 
