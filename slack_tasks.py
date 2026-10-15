@@ -471,4 +471,13 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit as e:
+        if e.code not in (None, 0) and os.environ.get("GITHUB_ACTIONS"):
+            log(f"::error title=Slack tasks failed::{e.code}")
+        raise
+    except Exception as e:
+        if os.environ.get("GITHUB_ACTIONS"):
+            log(f"::error title=Slack tasks failed::{type(e).__name__}: {str(e)[:900]}".replace("\n", " "))
+        raise
