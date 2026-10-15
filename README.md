@@ -4,6 +4,7 @@ Every **5 minutes**, this workflow reads new Slack messages and guest conversati
 
 1. **Read:** picks up everything new since the last run:
    - **Slack:** new messages and thread replies in every channel the bot has been invited to.
+   - **Quo:** new texts and calls on the Canada and USA Quo numbers. Calls are read through Quo's AI call summary (waiting up to 30 minutes for it to be ready). Tasks from the Canada number go on the Canada board, tasks from the USA number on the USA board (set in `QUO_NUMBERS` in the workflow).
    - **Hospitable:** new messages in every guest conversation (reservations from 6 months ago to a year ahead). Templated automated messages are left out.
 2. **Find:** Claude reads the conversation and picks out real tasks (things someone was asked to do, agreed to do, or clearly needs to do). It skips chit-chat, FYIs, work that's already done, and tasks already open on the boards. For each task it decides:
    - **who** should do it (whoever was asked, @-tagged, or said "I'll do it"),
@@ -49,6 +50,7 @@ Add these in **Settings → Secrets and variables → Actions**:
 | `SLACK_BOT_TOKEN` | Bot token from step 1 |
 | `MONDAY_API_TOKEN` | monday.com → avatar → Developers → My access tokens |
 | `HOSPITABLE_API_TOKEN` | Hospitable → Apps → API access → personal access token (read access is enough). Without it, guest conversations are skipped. |
+| `QUO_API_KEY` | Quo → Settings → API → generate key. Without it, Quo texts and calls are skipped. |
 | `ANTHROPIC_API_KEY` | Claude API key from console.anthropic.com |
 | `ANTHROPIC_WORKSPACE_ID` | Only needed if the API key isn't scoped to a workspace |
 

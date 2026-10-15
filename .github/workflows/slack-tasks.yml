@@ -47,11 +47,12 @@ jobs:
           key: slack-state-${{ github.run_id }}
           restore-keys: slack-state-
 
-      - name: Find tasks in Slack and guest conversations
+      - name: Find tasks in Slack, guest conversations and Quo
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           MONDAY_API_TOKEN: ${{ secrets.MONDAY_API_TOKEN }}
           HOSPITABLE_API_TOKEN: ${{ secrets.HOSPITABLE_API_TOKEN }}
+          QUO_API_KEY: ${{ secrets.QUO_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           ANTHROPIC_WORKSPACE_ID: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}
           # Scheduled runs create tasks for real; manual runs default to a dry run.
@@ -60,6 +61,8 @@ jobs:
           STATE_FILE: state/slack_state.json
           FIRST_RUN_HOURS: "2"
           DEFAULT_COUNTRY: Canada
+          # Which Quo number files tasks on which board, e.g. "+15195550100=Canada,+16175550100=USA"
+          QUO_NUMBERS: ""
           SLACK_CHANNELS: ""  # e.g. "maintenance,cleaning-ops,team" to limit the scan
         run: python slack_tasks.py
 

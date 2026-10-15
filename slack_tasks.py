@@ -3,22 +3,26 @@
 
 1. Reads new messages since the last run from
    - every Slack channel the bot has been added to (including thread replies), and
-   - every Hospitable guest conversation with new activity.
+   - every Hospitable guest conversation with new activity, and
+   - every Quo text conversation and call (with its AI summary) on the Quo numbers.
 2. Has Claude pick out the actionable tasks, who should do them, any deadline,
    and whether each one belongs to the USA or the Canada portfolio (guest
-   conversations always go to the country of their property).
+   conversations go to the country of their property, Quo conversations to the
+   country of the Quo number).
 3. Creates each task on the "Daily Tasks" board of the matching monday.com
    workspace (USA Automated / Canada Automated), in the "Other task" group,
    with the person assigned so monday notifies them.
 
 Each item's Notes carry a "[slack <channel> <ts>]" or
-"[hospitable <reservation> <message id>]" key for the message the task came from. That key is checked before creating anything, so overlapping or
+"[hospitable <reservation> <message id>]" or "[quo <conversation> <message/call id>]" key for the message the task came from. That key is checked before creating anything, so overlapping or
 re-run windows never create the same task twice.
 
 Environment:
   SLACK_BOT_TOKEN       Slack bot token (xoxb-...) (required)
   MONDAY_API_TOKEN      monday.com API token (required)
   HOSPITABLE_API_TOKEN  Hospitable personal access token; guest conversations are skipped without it
+  QUO_API_KEY           Quo (OpenPhone) API key; Quo texts and calls are skipped without it
+  QUO_NUMBERS           which Quo number belongs to which board, e.g. "+15195550100=Canada,+16175550100=USA"
   ANTHROPIC_API_KEY     Claude API key (required)
   ANTHROPIC_WORKSPACE_ID  workspace for the key; needed only if the key isn't scoped to one
   DRY_RUN               "true" to log the tasks without creating them or moving the checkpoint
@@ -43,6 +47,7 @@ import anthropic
 
 SLACK_API = "https://slack.com/api"
 HOSPITABLE_API = "https://public.api.hospitable.com/v2"
+QUO_API = "https://api.openphone.com/v1"
 MONDAY_API = "https://api.monday.com/v2"
 MODEL = "claude-opus-5-5"
 
@@ -68,15 +73,20 @@ COUNTRY_CODES = {"US": "USA", "CA": "Canada"}
 # Templated host messages (check-in instructions, reminders) never hold new work
 SKIP_GUEST_SOURCES = {"automated"}
 
-SOURCE_KEY_RE = re.compile(r"\[(slack|hospitable) ([\w-]+) ([\w.]+)\]")
+QUO_CONTEXT_MESSAGES = 20   # latest texts per Quo conversation shown to Claude
+QUO_CALL_LAG = 30 * 60       # call summaries arrive after the call ends; look this far back for them
+QUO_UNFINISHED_CALLS = {"queued", "initiated", "ringing", "in-progress"}
+
+SOURCE_KEY_RE = re.compile(r"\[(slack|hospitable|quo) ([\w-]+) ([\w.]+)\]")
 SKIP_SUBTYPES = {"channel_join", "channel_leave", "channel_topic", "channel_purpose", "channel_name",
                  "channel_archive", "channel_unarchive", "pinned_item", "unpinned_item", "bot_add",
                  "bot_remove", "message_deleted", "message_changed", "tombstone"}
 
 SYSTEM_PROMPT = """You read conversations for Instastay, a short-term rental management company with properties in the USA and Canada, and pick out tasks that someone on the team needs to do.
 
-There are two kinds of conversation:
+There are three kinds of conversation:
 - Slack: the team talking to each other.
+- Quo: texts and phone calls on the company's business phone lines, with owners, guests, cleaners, contractors and vendors. Calls appear as a summary. Tasks are the follow-ups the team owes: things promised or requested on the call or in the text.
 - Guest: a guest messaging the host about their reservation. The host replies come from the team (sometimes drafted by AI). Guest-side tasks are things the team must do for the stay: repairs, missing or broken items, supplies, cleaning, laundry pickup, early check-in or late checkout to arrange, refunds or charges to process, complaints to follow up. A promise the host made in a [NEW] message ("I'll send someone tomorrow") is a task too. A question the host already fully answered (wifi password, parking, directions) is not.
 
 A task is a concrete piece of work someone has been asked to do, has agreed to do, or clearly needs to do: fix, buy, clean, inspect, call, send, book, pay, follow up, etc.
@@ -91,7 +101,7 @@ Rules:
 - title: a short imperative line (under 80 characters) that names the property when one is mentioned, e.g. "Replace smoke detector battery at 600 Sarnia Rd".
 - details: one to three sentences with what is needed and any specifics from the conversation (amounts, times, guest names, unit numbers). Don't invent anything.
 - assignee_ids: the monday user ids of the people who should do it, chosen from the team list. Use whoever was asked or tagged (@name), or who said they would do it. If nobody can be identified, return an empty list. Never assign a guest.
-- country: "USA" or "Canada". For guest conversations use the country in the conversation header. For Slack, use the property, city, or channel; if you can't tell, return "Unknown".
+- country: "USA" or "Canada". For guest and Quo conversations use the country in the conversation header. For Slack, use the property, city, or channel; if you can't tell, return "Unknown".
 - deadline: YYYY-MM-DD if a date or relative day ("tomorrow", "by Friday") is given, resolved against the message date; otherwise an empty string.
 - source, source_conversation and source_message: copy the source and conversation id from the conversation header, and the id of the [NEW] message the task comes from, exactly as shown.
 
@@ -110,7 +120,7 @@ OUTPUT_SCHEMA = {
                     "assignee_ids": {"type": "array", "items": {"type": "integer"}},
                     "country": {"type": "string", "enum": ["USA", "Canada", "Unknown"]},
                     "deadline": {"type": "string"},
-                    "source": {"type": "string", "enum": ["slack", "hospitable"]},
+                    "source": {"type": "string", "enum": ["slack", "hospitable", "quo"]},
                     "source_conversation": {"type": "string"},
                     "source_message": {"type": "string"},
                 },
@@ -388,6 +398,131 @@ def read_hospitable(checkpoint, now):
     return transcripts, new_total, info
 
 
+# ---------------------------------------------------------------------------- Quo
+
+def quo(path, params=None):
+    url = f"{QUO_API}{path}"
+    if params:
+        url += "?" + urllib.parse.urlencode(params, doseq=True)
+    return http_json(url, headers={"Authorization": os.environ["QUO_API_KEY"], "Accept": "application/json"})
+
+
+def quo_pages(path, params, limit=None):
+    token, count = None, 0
+    while True:
+        resp = quo(path, {**params, **({"pageToken": token} if token else {})})
+        for row in resp.get("data") or []:
+            yield row
+            count += 1
+            if limit and count >= limit:
+                return
+        token = resp.get("nextPageToken")
+        if not token:
+            return
+
+
+def iso_z(ts):
+    return dt.datetime.fromtimestamp(ts, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def parse_quo_numbers(spec):
+    """"+15195550100=Canada,+16175550100=USA" -> {"+15195550100": "Canada", ...}"""
+    out = {}
+    for part in (spec or "").split(","):
+        if "=" in part:
+            num, country = part.split("=", 1)
+            out[re.sub(r"[^\d+]", "", num.strip())] = country.strip()
+    return out
+
+
+def quo_lines(mapping):
+    """Quo phone lines with the board each one belongs to."""
+    lines = []
+    for pn in quo_pages("/phone-numbers", {}):
+        number = pn.get("number") or pn.get("formattedNumber") or ""
+        country = mapping.get(re.sub(r"[^\d+]", "", number))
+        if not country:
+            name = (pn.get("name") or "").lower()
+            country = "Canada" if "canada" in name else "USA" if ("usa" in name or "us " in name + " ") else "Unknown"
+        lines.append({"id": pn["id"], "number": number, "name": pn.get("name") or number, "country": country})
+    return lines
+
+
+def quo_call_text(call):
+    """A call as one transcript line: direction, length, and its AI summary when there is one."""
+    duration = call.get("duration") or 0
+    text = f"{call.get('direction') or ''} call, {duration // 60}m{duration % 60:02d}s, {call.get('status') or ''}"
+    try:
+        summary = quo(f"/call-summaries/{call['id']}").get("data") or {}
+    except (HTTPStatusError, RuntimeError):
+        summary = {}
+    points = summary.get("summary") or []
+    steps = summary.get("nextSteps") or []
+    if points:
+        text += ". Summary: " + " ".join(points)
+    if steps:
+        text += " Next steps: " + " ".join(steps)
+    if not points and not steps:
+        text += ". (no summary available)"
+    return text, bool(points or steps)
+
+
+def quo_transcript(line, convo, checkpoint, now, seen_calls):
+    """Transcript of one Quo conversation for Claude, its [NEW] count, and call ids now handled."""
+    participants = convo.get("participants") or []
+    base = {"phoneNumberId": line["id"], "participants": participants}
+    entries = []
+    for m in quo_pages("/messages", {**base, "maxResults": 50}, limit=QUO_CONTEXT_MESSAGES):
+        if not (m.get("text") or "").strip():
+            continue
+        who = "team" if m.get("direction") == "outgoing" else (m.get("from") or "contact")
+        entries.append((m["createdAt"], m["id"], who, " ".join(m["text"].split()), iso_ts(m["createdAt"]) > checkpoint))
+    handled = set()
+    for c in quo_pages("/calls", {**base, "createdAfter": iso_z(checkpoint - QUO_CALL_LAG), "maxResults": 50}):
+        if c["id"] in seen_calls or c.get("status") in QUO_UNFINISHED_CALLS:
+            continue
+        text, has_summary = quo_call_text(c)
+        # A call counts as new once its summary is ready (or it's too old to wait for one).
+        ready = has_summary or iso_ts(c["createdAt"]) < now - QUO_CALL_LAG
+        if ready:
+            handled.add(c["id"])
+        entries.append((c["createdAt"], c["id"], "call", text, ready))
+    entries.sort(key=lambda e: e[0])
+    lines, new_count = [], 0
+    for created, eid, who, text, is_new in entries[-QUO_CONTEXT_MESSAGES:]:
+        lines.append(f"[{'NEW' if is_new else 'context'}] id={eid} {fmt_ts(iso_ts(created))} {who}: {text}")
+        new_count += is_new
+    return lines, new_count, handled
+
+
+def read_quo(checkpoint, now, seen_calls):
+    """(transcripts, new message count, conversation id -> info, handled call ids) for Quo."""
+    mapping = parse_quo_numbers(os.environ.get("QUO_NUMBERS"))
+    transcripts, new_total, info, handled = [], 0, {}, set()
+    lines_found = quo_lines(mapping)
+    if DRY_RUN and os.environ.get("GITHUB_ACTIONS"):
+        found = "%0A".join(f"{ln['number']} ({ln['name']}) -> {ln['country']}" for ln in lines_found)
+        log(f"::notice title=Quo numbers::{found or 'none found'}")
+    for line in lines_found:
+        if line["country"] not in WORKSPACES:
+            log(f"! Quo number {line['number']} ({line['name']}) isn't mapped to USA or Canada in QUO_NUMBERS; skipped")
+            continue
+        convos = quo_pages("/conversations", {"phoneNumbers": [line["id"]], "maxResults": 100,
+                                              "updatedAfter": iso_z(checkpoint - QUO_CALL_LAG)})
+        for convo in convos:
+            lines, new_count, calls = quo_transcript(line, convo, checkpoint, now, seen_calls)
+            handled |= calls
+            if not new_count:
+                continue
+            who = convo.get("name") or ", ".join(convo.get("participants") or []) or "unknown"
+            transcripts.append((f"Quo conversation (source quo, conversation id {convo['id']}) on the "
+                                f"{line['country']} line {line['number']} with {who} ({line['country']})", lines))
+            new_total += new_count
+            info[convo["id"]] = {"country": line["country"], "label": f"{who} on the {line['country']} Quo line"}
+            log(f"Quo {line['country']} line, {who}: {new_count} new")
+    return transcripts, new_total, info, handled
+
+
 # ------------------------------------------------------------------------- monday
 
 def monday_users():
@@ -546,8 +681,11 @@ def main():
     checkpoint = float(state.get("checkpoint") or now - FIRST_RUN_HOURS * 3600)
     h_checkpoint = float(state.get("hospitable_checkpoint") or checkpoint)
     if os.environ.get("LOOKBACK_HOURS"):
-        checkpoint = h_checkpoint = now - float(os.environ["LOOKBACK_HOURS"]) * 3600
-    new_state = {"checkpoint": now, "hospitable_checkpoint": h_checkpoint}
+        checkpoint = h_checkpoint = q_checkpoint = now - float(os.environ["LOOKBACK_HOURS"]) * 3600
+    q_checkpoint = float(state.get("quo_checkpoint") or checkpoint)
+    seen_calls = set(state.get("quo_seen_calls") or [])
+    new_state = {"checkpoint": now, "hospitable_checkpoint": h_checkpoint,
+                 "quo_checkpoint": q_checkpoint, "quo_seen_calls": sorted(seen_calls)}
     log(f"Reading Slack messages since {fmt_ts(checkpoint)}")
 
     team_url = slack("auth.test").get("url", "")
@@ -585,6 +723,23 @@ def main():
     else:
         log("HOSPITABLE_API_TOKEN not set: guest conversations skipped")
 
+    quo_convos = {}
+    if os.environ.get("QUO_API_KEY"):
+        log(f"Reading Quo texts and calls since {fmt_ts(q_checkpoint)}")
+        try:
+            q_transcripts, q_new, quo_convos, handled = read_quo(q_checkpoint, now, seen_calls)
+            transcripts += q_transcripts
+            new_total += q_new
+            new_state["quo_checkpoint"] = now
+            # Remember calls already sent to Claude; ids older than the look-back window can be forgotten.
+            new_state["quo_seen_calls"] = sorted(handled | seen_calls)[-500:]
+        except (RuntimeError, OSError) as e:
+            log(f"! Quo: {e}")
+            if os.environ.get("GITHUB_ACTIONS"):
+                log(f"::warning title=Quo skipped::{str(e)[:900]}".replace("\n", " "))
+    else:
+        log("QUO_API_KEY not set: Quo texts and calls skipped")
+
     if not new_total:
         log("No new messages.")
         if not DRY_RUN:
@@ -614,7 +769,8 @@ def main():
             log(f"= already on monday: {task['title']}")
             continue
         seen.add(key)
-        guest = guests.get(task["source_conversation"]) if task["source"] == "hospitable" else None
+        guest = (guests.get(task["source_conversation"]) if task["source"] == "hospitable"
+                 else quo_convos.get(task["source_conversation"]) if task["source"] == "quo" else None)
         country = guest["country"] if guest and guest["country"] in WORKSPACES else task["country"]
         country = country if country in WORKSPACES else DEFAULT_COUNTRY
         who = ", ".join(names.get(i, str(i)) for i in task["assignee_ids"] if i in valid_ids) or "unassigned"
@@ -625,6 +781,8 @@ def main():
             continue
         if task["source"] == "hospitable":
             source_line = f"Hospitable: {guest['label']}" if guest else "Hospitable guest conversation"
+        elif task["source"] == "quo":
+            source_line = f"Quo: {guest['label']}" if guest else "Quo conversation"
         else:
             link = permalink_for(team_url, task["source_conversation"], task["source_message"])
             source_line = f"Slack: {link}" if link else ""

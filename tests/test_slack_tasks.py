@@ -93,6 +93,47 @@ class GuestTranscriptTests(unittest.TestCase):
         self.assertEqual(s.reservation_property({"properties": []}, props)["country"], "Unknown")
 
 
+class QuoTests(unittest.TestCase):
+    line = {"id": "PN1", "number": "+15195550100", "name": "Canada", "country": "Canada"}
+
+    def test_parse_numbers(self):
+        self.assertEqual(s.parse_quo_numbers("+1 (519) 555-0100=Canada, +16175550100=USA"),
+                         {"+15195550100": "Canada", "+16175550100": "USA"})
+
+    def test_lines_mapping_and_name_fallback(self):
+        pages = [{"id": "PN1", "number": "+15195550100", "name": "Main"},
+                 {"id": "PN2", "number": "+16175550100", "name": "Instastay USA"},
+                 {"id": "PN3", "number": "+12125550100", "name": "Other"}]
+        with mock.patch.object(s, "quo_pages", return_value=iter(pages)):
+            lines = s.quo_lines({"+15195550100": "Canada"})
+        self.assertEqual([l["country"] for l in lines], ["Canada", "USA", "Unknown"])
+
+    def test_transcript_marks_texts_and_ready_calls(self):
+        checkpoint = s.iso_ts("2026-10-15T12:00:00Z")
+        now = checkpoint + 600
+        def pages(path, params, limit=None):
+            if path == "/messages":
+                return iter([{"id": "AC2", "createdAt": "2026-10-15T12:05:00Z", "direction": "incoming",
+                              "from": "+15195551234", "text": "The furnace\nis making noise"},
+                             {"id": "AC1", "createdAt": "2026-10-15T11:00:00Z", "direction": "outgoing", "text": "Hi!"}])
+            return iter([{"id": "CA1", "createdAt": "2026-10-15T12:02:00Z", "direction": "incoming",
+                          "status": "completed", "duration": 125},
+                         {"id": "CA2", "createdAt": "2026-10-15T12:08:00Z", "status": "in-progress"},
+                         {"id": "CA0", "createdAt": "2026-10-15T11:50:00Z", "status": "completed"}])
+        summary = {"data": {"summary": ["Owner asked for a furnace check."], "nextSteps": ["Book HVAC tech"]}}
+        with mock.patch.object(s, "quo_pages", side_effect=pages), mock.patch.object(s, "quo", return_value=summary):
+            lines, count, handled = s.quo_transcript(self.line, {"participants": ["+15195551234"]},
+                                                     checkpoint, now, seen_calls={"CA0"})
+        self.assertEqual(count, 2)
+        self.assertEqual(handled, {"CA1"})
+        self.assertIn("[context] id=AC1", lines[0])
+        self.assertIn("team: Hi!", lines[0])
+        self.assertIn("[NEW] id=CA1", lines[1])
+        self.assertIn("incoming call, 2m05s, completed. Summary: Owner asked for a furnace check. Next steps: Book HVAC tech", lines[1])
+        self.assertIn("[NEW] id=AC2", lines[2])
+        self.assertIn("+15195551234: The furnace is making noise", lines[2])
+
+
 class MondayValueTests(unittest.TestCase):
     def test_column_values(self):
         vals = s.column_values(task(assignee_ids=[11, 11, 99], deadline="2026-10-20"), COLS, {11, 12}, "notes")
