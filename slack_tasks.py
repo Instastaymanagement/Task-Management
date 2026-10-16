@@ -29,6 +29,7 @@ Environment:
   HOSPITABLE_API_TOKEN  Hospitable personal access token; guest conversations are skipped without it
   QUO_API_KEY           Quo (OpenPhone) API key; Quo texts are skipped without it
   QUO_NUMBERS           which Quo number belongs to which board, e.g. "+15195550100=Canada,+16175550100=USA"
+  CANDIDATE_BOARD       monday board of job candidates (Vacancies); their Quo texts are left to HR-Interview
   ANTHROPIC_API_KEY     Claude API key (required)
   ANTHROPIC_WORKSPACE_ID  workspace for the key; needed only if the key isn't scoped to one
   DRY_RUN               "true" to log the tasks without creating them or moving the checkpoint
@@ -511,9 +512,27 @@ def quo_transcript(line, convo, checkpoint, now):
     return lines, new_count
 
 
+def candidate_phones(board_id):
+    """Phone numbers on the job candidates board; the HR-Interview automation handles their texts."""
+    if not board_id:
+        return set()
+    data = monday("query($id:[ID!]){boards(ids:$id){columns{id type}}}", {"id": [board_id]})
+    phone_cols = [c["id"] for c in data["boards"][0]["columns"] if c["type"] == "phone"]
+    if not phone_cols:
+        return set()
+    phones = set()
+    for it in board_items(board_id, phone_cols):
+        for c in it["column_values"]:
+            num = re.sub(r"[^\d+]", "", c["text"] or "")
+            if num:
+                phones.add(num if num.startswith("+") else "+1" + num[-10:])
+    return phones
+
+
 def read_quo(checkpoint, now):
     """(transcripts, new message count, conversation id -> info) for Quo texts."""
     mapping = parse_quo_numbers(os.environ.get("QUO_NUMBERS"))
+    candidates = candidate_phones(int(os.environ.get("CANDIDATE_BOARD") or 0))
     transcripts, new_total, info = [], 0, {}
     lines_found = quo_lines(mapping)
     if DRY_RUN and os.environ.get("GITHUB_ACTIONS"):
@@ -526,6 +545,8 @@ def read_quo(checkpoint, now):
         convos = quo_pages("/conversations", {"phoneNumbers": [line["id"]], "maxResults": 100,
                                               "updatedAfter": iso_z(checkpoint)})
         for convo in convos:
+            if candidates & set(convo.get("participants") or []):
+                continue  # a job candidate: HR-Interview handles these texts
             lines, new_count = quo_transcript(line, convo, checkpoint, now)
             if not new_count:
                 continue

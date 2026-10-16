@@ -208,6 +208,28 @@ class TaskUpdateTests(unittest.TestCase):
         self.assertEqual(board["done_group_id"], "g_done")
 
 
+class CandidateFilterTests(unittest.TestCase):
+    def test_candidate_phones(self):
+        cols = {"boards": [{"columns": [{"id": "phone_x", "type": "phone"}, {"id": "name", "type": "name"}]}]}
+        items = [{"column_values": [{"id": "phone_x", "text": "+12267009127"}]},
+                 {"column_values": [{"id": "phone_x", "text": "(226) 919-6393"}]},
+                 {"column_values": [{"id": "phone_x", "text": ""}]}]
+        with mock.patch.object(s, "monday", return_value=cols), mock.patch.object(s, "board_items", return_value=items):
+            self.assertEqual(s.candidate_phones(5), {"+12267009127", "+12269196393"})
+        self.assertEqual(s.candidate_phones(0), set())
+
+    def test_read_quo_skips_candidates(self):
+        line = {"id": "PN1", "number": "+12267813731", "name": "London", "country": "Canada"}
+        convos = [{"id": "C1", "participants": ["+12267009127"]}, {"id": "C2", "participants": ["+15195550000"]}]
+        seen = []
+        with mock.patch.object(s, "candidate_phones", return_value={"+12267009127"}), \
+             mock.patch.object(s, "quo_lines", return_value=[line]), \
+             mock.patch.object(s, "quo_pages", return_value=iter(convos)), \
+             mock.patch.object(s, "quo_transcript", side_effect=lambda l, c, cp, n: seen.append(c["id"]) or ([], 0)):
+            s.read_quo(0, 1)
+        self.assertEqual(seen, ["C2"])
+
+
 class MondayValueTests(unittest.TestCase):
     def test_column_values(self):
         vals = s.column_values(task(assignee_ids=[11, 11, 99], deadline="2026-10-20"), COLS, {11, 12}, "notes")

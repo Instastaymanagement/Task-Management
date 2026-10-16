@@ -63,6 +63,8 @@ jobs:
           DEFAULT_COUNTRY: Canada
           # Which Quo number files tasks on which board, e.g. "+15195550100=Canada,+16175550100=USA"
           QUO_NUMBERS: "+12267813731=Canada,+18573538919=USA"
+          # Job candidates' texts are handled by the HR-Interview repo, not turned into tasks
+          CANDIDATE_BOARD: "18435820027"
           SLACK_CHANNELS: ""  # e.g. "maintenance,cleaning-ops,team" to limit the scan
         run: python slack_tasks.py
 
