@@ -170,7 +170,7 @@ class TaskUpdateTests(unittest.TestCase):
         self.assertIn("move_item_to_group", calls[1][0])
         self.assertEqual(calls[1][1], {"item": 42, "group": "g_done"})
         self.assertIn("create_update", calls[2][0])
-        self.assertIn("Ivy sent the parking rules.", calls[2][1]["body"])
+        self.assertEqual(calls[2][1]["body"], "Ivy sent the parking rules.")
 
     def test_in_progress_with_new_deadline(self):
         calls = self.run_update("in_progress", "2026-10-20")

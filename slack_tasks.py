@@ -129,7 +129,7 @@ You are also given the open tasks on the boards, each with its id, the conversat
 - action "done": the [NEW] messages show the work is finished, the question was answered, the guest/owner/vendor got the reply they needed, or the task was cancelled or is no longer needed. A host or team reply that fully answers what the task asked for counts ("Reply to X about parking" is done once the parking rules were sent).
 - action "in_progress": someone has started or taken it on but it isn't finished ("I'm on it", "booked the plumber for Monday").
 - action "note": something relevant happened that doesn't change the status (new details, a changed plan, a blocker, a promise of a new date).
-- comment: one or two sentences saying what happened, naming who did it, written for the team (e.g. "Ivy sent Heather the street parking rules in Hospitable on Oct 16.").
+- comment: what a teammate would post on the task in monday: one or two short, plain sentences saying what happened and who did it, in a natural voice. No labels, prefixes, emojis, sign-offs, or mention of automation or AI. E.g. "Ivy sent Heather the street parking rules in Hospitable, so this one's done." or "Waleed's lining up the tech to check the stove; Jeannette is OK with them coming by."
 - new_deadline: YYYY-MM-DD if the conversation sets or moves the date for the work, otherwise an empty string.
 - item_id: the open task's id, exactly as listed. source_message: the id of the [NEW] message this is based on.
 Only use evidence from [NEW] messages; never mark a task done because it is old, or from a guess. If it is unclear whether a task is finished, use "note" or leave it out. A message can both resolve an open task and create a new task. If nothing changed for any open task, return an empty list."""
@@ -683,7 +683,7 @@ def apply_task_update(board, item_id, action, comment, deadline):
         monday("mutation($item:ID!, $group:String!){move_item_to_group(item_id:$item, group_id:$group){id}}",
                {"item": item_id, "group": board["done_group_id"]})
     monday("mutation($item:ID!, $body:String!){create_update(item_id:$item, body:$body){id}}",
-           {"item": item_id, "body": f"🤖 Task automation: {comment}"})
+           {"item": item_id, "body": comment.strip()})
 
 
 # ------------------------------------------------------------------------- Claude

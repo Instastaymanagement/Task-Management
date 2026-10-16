@@ -34,7 +34,7 @@ Each run also checks the open tasks in **Other task** against the new messages. 
 - **In progress:** someone took it on but hasn't finished. The status is set to **Working on it**.
 - **Note:** new details, a blocker or a changed plan, with no status change.
 
-If the conversation sets a new date, the deadline is moved. Every change leaves a comment on the item (starting with 🤖) saying what happened and who did it. The Daily Checklist and Weekly Tasks groups are never touched, since they repeat.
+If the conversation sets a new date, the deadline is moved. Every change leaves a short comment on the item, written the way a teammate would post it, saying what happened and who did it. It's posted as the person whose monday API token the automation uses. The Daily Checklist and Weekly Tasks groups are never touched, since they repeat.
 
 From guest conversations, Claude picks out work the team has to do for the stay: repairs, missing items, supplies, cleaning, laundry, early check-in or late checkout to arrange, refunds or charges, complaints to follow up, and anything a host reply promised. Questions the host already fully answered (wifi, parking, directions) are skipped.
 
