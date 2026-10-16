@@ -14,6 +14,10 @@
    workspace (USA Automated / Canada Automated), in the "Other task" group,
    with the person assigned so monday notifies them and the property linked
    to its row in that workspace's Properties Master.
+4. Checks the open tasks in "Other task" against the same conversations: a task
+   the conversation shows was handled is marked Done and moved to "Completed
+   task"; progress on one updates its status or deadline. Every change is
+   explained in a comment on the item.
 
 Each item's Notes carry a "[slack <channel> <ts>]" or
 "[hospitable <reservation> <message id>]" or "[quo <conversation> <message id>]" key for the message the task came from. That key is checked before creating anything, so overlapping or
@@ -60,6 +64,9 @@ WORKSPACES = {
     "Canada": {"name": "Canada Automated(Trial)", "tasks_board": 18435476578, "properties_board": 18435476437},
 }
 TASK_GROUP = "Other task"
+DONE_GROUP = "Completed task"
+DONE_STATUS = "Done"
+PROGRESS_STATUS = "Working on it"
 NEW_STATUS = "Not done"
 
 DRY_RUN = os.environ.get("DRY_RUN", "").lower() in ("1", "true", "yes")
@@ -115,7 +122,17 @@ Rules:
   Never set a date before today.
 - source, source_conversation and source_message: copy the source and conversation id from the conversation header, and the id of the [NEW] message the task comes from, exactly as shown.
 
-If there are no tasks, return an empty list."""
+If there are no tasks, return an empty list.
+
+Updating open tasks (task_updates):
+You are also given the open tasks on the boards, each with its id, the conversation it came from, its notes and deadline. When a [NEW] message shows what happened to one of them, return an entry in task_updates:
+- action "done": the [NEW] messages show the work is finished, the question was answered, the guest/owner/vendor got the reply they needed, or the task was cancelled or is no longer needed. A host or team reply that fully answers what the task asked for counts ("Reply to X about parking" is done once the parking rules were sent).
+- action "in_progress": someone has started or taken it on but it isn't finished ("I'm on it", "booked the plumber for Monday").
+- action "note": something relevant happened that doesn't change the status (new details, a changed plan, a blocker, a promise of a new date).
+- comment: one or two sentences saying what happened, naming who did it, written for the team (e.g. "Ivy sent Heather the street parking rules in Hospitable on Oct 16.").
+- new_deadline: YYYY-MM-DD if the conversation sets or moves the date for the work, otherwise an empty string.
+- item_id: the open task's id, exactly as listed. source_message: the id of the [NEW] message this is based on.
+Only use evidence from [NEW] messages; never mark a task done because it is old, or from a guess. If it is unclear whether a task is finished, use "note" or leave it out. A message can both resolve an open task and create a new task. If nothing changed for any open task, return an empty list."""
 
 OUTPUT_SCHEMA = {
     "type": "object",
@@ -141,8 +158,23 @@ OUTPUT_SCHEMA = {
             },
         },
     },
-    "required": ["tasks"],
+    "required": ["tasks", "task_updates"],
     "additionalProperties": False,
+}
+OUTPUT_SCHEMA["properties"]["task_updates"] = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "item_id": {"type": "integer"},
+            "action": {"type": "string", "enum": ["done", "in_progress", "note"]},
+            "comment": {"type": "string"},
+            "new_deadline": {"type": "string"},
+            "source_message": {"type": "string"},
+        },
+        "required": ["item_id", "action", "comment", "new_deadline", "source_message"],
+        "additionalProperties": False,
+    },
 }
 
 
@@ -541,15 +573,28 @@ def load_board(country):
     for title in ("Person", "Status", "Deadline", "Notes/Updates"):
         if title not in cols:
             raise RuntimeError(f"Daily Tasks board in {ws['name']} has no '{title}' column")
-    items = board_items(ws["tasks_board"], [cols["Person"], cols["Status"], cols["Notes/Updates"]])
-    keys, open_tasks = set(), []
+    items = board_items(ws["tasks_board"], [cols["Person"], cols["Status"], cols["Notes/Updates"], cols["Deadline"]])
+    keys, open_tasks, updatable = set(), [], {}
     for it in items:
         vals = {c["id"]: c["text"] or "" for c in it["column_values"]}
-        keys.update(SOURCE_KEY_RE.findall(vals.get(cols["Notes/Updates"], "")))
-        if (it.get("group") or {}).get("title") != "Completed task" and vals.get(cols["Status"]) != "Done":
-            open_tasks.append(f"- [{country}] {it['name']} (assigned: {vals.get(cols['Person']) or 'nobody'})")
+        notes = vals.get(cols["Notes/Updates"], "")
+        item_keys = SOURCE_KEY_RE.findall(notes)
+        keys.update(item_keys)
+        group = (it.get("group") or {}).get("title")
+        if group == DONE_GROUP or vals.get(cols["Status"]) == DONE_STATUS:
+            continue
+        open_tasks.append(f"- [{country}] {it['name']} (assigned: {vals.get(cols['Person']) or 'nobody'})")
+        # Only one-off tasks are closed automatically; the daily and weekly checklists recur.
+        if group == TASK_GROUP:
+            updatable[int(it["id"])] = {
+                "id": int(it["id"]), "country": country, "name": it["name"], "status": vals.get(cols["Status"]),
+                "assigned": vals.get(cols["Person"]) or "nobody", "deadline": vals.get(cols["Deadline"]) or "none",
+                "notes": " ".join(SOURCE_KEY_RE.sub("", notes).split())[:400],
+                "from": ", ".join(f"{src} conversation {conv}" for src, conv, _ in item_keys) or "unknown",
+            }
     return {"country": country, "board_id": ws["tasks_board"], "cols": cols,
-            "group_id": groups.get(TASK_GROUP), "keys": keys, "open_tasks": open_tasks}
+            "group_id": groups.get(TASK_GROUP), "done_group_id": groups.get(DONE_GROUP),
+            "keys": keys, "open_tasks": open_tasks, "updatable": updatable}
 
 
 def property_catalog(country):
@@ -621,6 +666,26 @@ def create_item(board, task, valid_user_ids, source_line, property_ids=()):
     return data["create_item"]["id"]
 
 
+def apply_task_update(board, item_id, action, comment, deadline):
+    """Change a task's status/group/deadline and leave a comment saying why."""
+    cols, vals = board["cols"], {}
+    if action == "done":
+        vals[cols["Status"]] = {"label": DONE_STATUS}
+    elif action == "in_progress":
+        vals[cols["Status"]] = {"label": PROGRESS_STATUS}
+    if deadline:
+        vals[cols["Deadline"]] = {"date": deadline}
+    if vals:
+        monday("""mutation($board:ID!, $item:ID!, $vals:JSON!){
+            change_multiple_column_values(board_id:$board, item_id:$item, column_values:$vals){id}}""",
+               {"board": board["board_id"], "item": item_id, "vals": json.dumps(vals)})
+    if action == "done" and board.get("done_group_id"):
+        monday("mutation($item:ID!, $group:String!){move_item_to_group(item_id:$item, group_id:$group){id}}",
+               {"item": item_id, "group": board["done_group_id"]})
+    monday("mutation($item:ID!, $body:String!){create_update(item_id:$item, body:$body){id}}",
+           {"item": item_id, "body": f"🤖 Task automation: {comment}"})
+
+
 # ------------------------------------------------------------------------- Claude
 
 def team_list(m_users, s_users):
@@ -633,7 +698,7 @@ def team_list(m_users, s_users):
     return "\n".join(lines)
 
 
-def build_prompt(transcripts, team, catalog, open_tasks, now):
+def build_prompt(transcripts, team, catalog, open_tasks, now, updatable=()):
     local = dt.datetime.fromtimestamp(now, LOCAL_TZ)
     parts = [f"Current time: {fmt_ts(now)} ({local.strftime('%A %Y-%m-%d %H:%M')} Eastern). "
              f"Today is {local.date().isoformat()}.", "", "Team (monday users you can assign):", team, ""]
@@ -642,7 +707,11 @@ def build_prompt(transcripts, team, catalog, open_tasks, now):
         parts += [f"- {r['id']}: {r['name']}" + (f", {r['address']}" if r["address"] else "") for r in rows] or ["(none listed)"]
         parts.append("")
     parts += ["", "Open tasks already on the boards (don't add these again):",
-              "\n".join(open_tasks[-300:]) or "(none)", "", "Conversations:"]
+              "\n".join(open_tasks[-300:]) or "(none)", "",
+              "Open one-off tasks you can update (task_updates):"]
+    parts += [f"- id {t['id']} [{t['country']}] {t['name']} | status {t['status'] or 'none'} | assigned {t['assigned']} | "
+              f"deadline {t['deadline']} | from {t['from']} | notes: {t['notes']}" for t in updatable] or ["(none)"]
+    parts += ["", "Conversations:"]
     for header, lines in transcripts:
         parts += ["", header, *lines]
     return "\n".join(parts)
@@ -660,11 +729,12 @@ def extract_tasks(client, prompt):
     )
     if response.stop_reason == "refusal":
         log("! Claude declined this batch")
-        return []
+        return [], []
     if response.stop_reason == "max_tokens":
         raise RuntimeError("Claude's answer was cut off (max_tokens); the checkpoint was not moved")
     text = "".join(b.text for b in response.content if b.type == "text")
-    return json.loads(text)["tasks"]
+    data = json.loads(text)
+    return data["tasks"], data.get("task_updates") or []
 
 
 # --------------------------------------------------------------------------- main
@@ -770,22 +840,25 @@ def main():
     catalog = {c: property_catalog(c) for c in WORKSPACES}
     today = local_today(now)
     open_tasks = boards["USA"]["open_tasks"] + boards["Canada"]["open_tasks"]
+    updatable = {**boards["USA"]["updatable"], **boards["Canada"]["updatable"]}
 
     workspace_id = os.environ.get("ANTHROPIC_WORKSPACE_ID", "").strip()
     client = anthropic.Anthropic(
         default_headers={"anthropic-workspace-id": workspace_id} if workspace_id else None,
     )
-    prompt = build_prompt(transcripts, team_list(m_users, s_users), catalog, open_tasks, now)
-    tasks = extract_tasks(client, prompt)
-    log(f"Claude found {len(tasks)} task(s)")
+    prompt = build_prompt(transcripts, team_list(m_users, s_users), catalog, open_tasks, now,
+                          sorted(updatable.values(), key=lambda t: t["id"]))
+    tasks, updates = extract_tasks(client, prompt)
+    log(f"Claude found {len(tasks)} task(s) and {len(updates)} update(s) to open tasks")
 
     seen = boards["USA"]["keys"] | boards["Canada"]["keys"]
     names = {u["id"]: u["name"] for u in m_users}
-    created, report = 0, []
+    created, report, skipped = 0, [], 0
     for task in tasks:
         key = (task["source"], task["source_conversation"], task["source_message"])
         if key in seen:
             log(f"= already on monday: {task['title']}")
+            skipped += 1
             continue
         seen.add(key)
         guest = (guests.get(task["source_conversation"]) if task["source"] == "hospitable"
@@ -814,10 +887,31 @@ def main():
         log(f"+ {label} (item {item_id})")
         report.append(f"ADDED {label}")
 
+    changed, handled = 0, set()
+    verbs = {"done": "DONE", "in_progress": "IN PROGRESS", "note": "NOTE"}
+    for up in updates:
+        target = updatable.get(up["item_id"])
+        if not target or up["item_id"] in handled:
+            log(f"! update for unknown or repeated task {up['item_id']} ignored")
+            continue
+        handled.add(up["item_id"])
+        deadline = ""
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", (up.get("new_deadline") or "").strip()):
+            deadline = clean_deadline(up["new_deadline"], today)
+        label = (f"{'WOULD MARK ' if DRY_RUN else ''}{verbs[up['action']]} [{target['country']}] {target['name']}"
+                 + (f" (due {deadline})" if deadline else "") + f": {up['comment']}")
+        report.append(label)
+        if DRY_RUN:
+            log(f"~ {label}")
+            continue
+        apply_task_update(boards[target["country"]], up["item_id"], up["action"], up["comment"], deadline)
+        changed += 1
+        log(f"* {label}")
+
     if not DRY_RUN:
         save_state(STATE_FILE, new_state)
-    summary = (f"{new_total} new message(s), {len(tasks)} task(s) found, "
-               f"{len(tasks) - len(report)} already on monday, {created} created")
+    summary = (f"{new_total} new message(s), {len(tasks)} task(s) found, {skipped} already on monday, "
+               f"{created} created, {len(handled)} open task(s) updated" + ("" if DRY_RUN else f" ({changed} applied)"))
     log(f"\nDone. {summary}")
     annotate(f"Tasks{' (dry run)' if DRY_RUN else ''}", [summary, *report])
 

@@ -26,6 +26,16 @@ Each new item goes in the **Other task** group with:
 - **Deadline:** always set. A date given in the conversation is used as is. Otherwise Claude sets one from urgency: today for problems affecting a staying guest or safety; the day before the next check-in for turnover work; 1–2 days for replies, laundry, deliveries and payments; 3–7 days for routine maintenance and purchases; up to 2 weeks for admin and licensing.
 - **Notes/Updates:** the details, where it came from (a link to the Slack message, or the guest, property and reservation code), and a `[slack …]` or `[hospitable …]` key. The key stops the same message from ever creating a second item.
 
+### Closing and updating tasks
+
+Each run also checks the open tasks in **Other task** against the new messages. Claude only acts on what the new messages show:
+
+- **Done:** the work was finished, the question was answered, or the task was cancelled. Example: a host reply in Hospitable that gives the guest the parking rules closes "Reply to Heather about parking". The status is set to **Done** and the item moves to **Completed task**.
+- **In progress:** someone took it on but hasn't finished. The status is set to **Working on it**.
+- **Note:** new details, a blocker or a changed plan, with no status change.
+
+If the conversation sets a new date, the deadline is moved. Every change leaves a comment on the item (starting with 🤖) saying what happened and who did it. The Daily Checklist and Weekly Tasks groups are never touched, since they repeat.
+
 From guest conversations, Claude picks out work the team has to do for the stay: repairs, missing items, supplies, cleaning, laundry, early check-in or late checkout to arrange, refunds or charges, complaints to follow up, and anything a host reply promised. Questions the host already fully answered (wifi, parking, directions) are skipped.
 
 If a task can't be tied to a country, it goes on the Canada board. Change `DEFAULT_COUNTRY` in the workflow to change this.

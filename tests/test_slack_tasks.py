@@ -154,6 +154,60 @@ class PropertyAndDeadlineTests(unittest.TestCase):
         self.assertNotIn("board_relation_x", s.column_values(task(), cols, {11}, "n", []))
 
 
+class TaskUpdateTests(unittest.TestCase):
+    board = {"board_id": 1, "cols": {**COLS}, "done_group_id": "g_done"}
+
+    def run_update(self, action, deadline=""):
+        calls = []
+        with mock.patch.object(s, "monday", side_effect=lambda q, v=None: calls.append((q, v)) or {}):
+            s.apply_task_update(self.board, 42, action, "Ivy sent the parking rules.", deadline)
+        return calls
+
+    def test_done_sets_status_moves_and_comments(self):
+        calls = self.run_update("done")
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(json.loads(calls[0][1]["vals"]), {"status": {"label": "Done"}})
+        self.assertIn("move_item_to_group", calls[1][0])
+        self.assertEqual(calls[1][1], {"item": 42, "group": "g_done"})
+        self.assertIn("create_update", calls[2][0])
+        self.assertIn("Ivy sent the parking rules.", calls[2][1]["body"])
+
+    def test_in_progress_with_new_deadline(self):
+        calls = self.run_update("in_progress", "2026-10-20")
+        self.assertEqual(json.loads(calls[0][1]["vals"]),
+                         {"status": {"label": "Working on it"}, "date_mm7ytd1z": {"date": "2026-10-20"}})
+        self.assertEqual(len(calls), 2)  # no move
+
+    def test_note_only_comments(self):
+        calls = self.run_update("note")
+        self.assertEqual(len(calls), 1)
+        self.assertIn("create_update", calls[0][0])
+
+    def test_load_board_lists_only_open_one_off_tasks(self):
+        items = [
+            {"id": "1", "name": "Reply to Heather", "group": {"title": "Other task"},
+             "column_values": [{"id": "status", "text": "Not done"}, {"id": "person", "text": "Anna"},
+                               {"id": "date_mm7ytd1z", "text": "2026-10-16"},
+                               {"id": "text_mm7xv1hm", "text": "Ask about parking\n[hospitable R1 55]"}]},
+            {"id": "2", "name": "Daily check", "group": {"title": "Daily Checklist"},
+             "column_values": [{"id": "status", "text": ""}, {"id": "text_mm7xv1hm", "text": ""}]},
+            {"id": "3", "name": "Old", "group": {"title": "Completed task"},
+             "column_values": [{"id": "status", "text": "Done"}, {"id": "text_mm7xv1hm", "text": "[slack C1 1.2]"}]},
+        ]
+        layout = ({"Person": "person", "Status": "status", "Deadline": "date_mm7ytd1z", "Notes/Updates": "text_mm7xv1hm"},
+                  {"Other task": "g_other", "Completed task": "g_done"})
+        with mock.patch.object(s, "board_layout", return_value=layout), mock.patch.object(s, "board_items", return_value=items):
+            board = s.load_board("Canada")
+        self.assertEqual(list(board["updatable"]), [1])
+        t = board["updatable"][1]
+        self.assertEqual(t["from"], "hospitable conversation R1")
+        self.assertEqual(t["notes"], "Ask about parking")
+        self.assertEqual(t["deadline"], "2026-10-16")
+        self.assertEqual(len(board["open_tasks"]), 2)  # checklist still counts for duplicates
+        self.assertEqual(board["keys"], {("hospitable", "R1", "55"), ("slack", "C1", "1.2")})
+        self.assertEqual(board["done_group_id"], "g_done")
+
+
 class MondayValueTests(unittest.TestCase):
     def test_column_values(self):
         vals = s.column_values(task(assignee_ids=[11, 11, 99], deadline="2026-10-20"), COLS, {11, 12}, "notes")
