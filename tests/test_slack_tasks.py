@@ -83,6 +83,30 @@ class GuestTranscriptTests(unittest.TestCase):
         self.assertIn("Brent McKenzie (guest): The dishwasher is leaking. [1 attachment(s)]", lines[1])
         self.assertIn("Mohamed A (host)", lines[2])
 
+    def test_holding_replies_are_not_new(self):
+        msgs = {"data": [
+            {"id": 6, "created_at": "2026-10-15T12:20:00Z", "sender_type": "host", "source": "public_api",
+             "body": "Thanks for asking. I've received your message and will get back to you.\u200b\u200c\u200d"},
+            {"id": 5, "created_at": "2026-10-15T12:15:00Z", "sender_type": "host", "source": "public_api",
+             "body": "Sorry for the trouble with this. Let me take a look and I'll get back to you soon."},
+        ]}
+        checkpoint = s.iso_ts("2026-10-15T12:00:00Z")
+        with mock.patch.object(s, "hospitable", return_value=msgs):
+            lines, count = s.guest_transcript(self.res, {}, checkpoint, now=checkpoint + 3600)
+        self.assertEqual(count, 0)  # nothing to send to Claude
+        self.assertTrue(all(l.startswith("[context]") for l in lines))
+
+    def test_holding_reply_patterns(self):
+        for text in ("Thank you.", "You're very welcome, Brent!", "Hi Brent! Thanks for reaching out. I'll get back to you shortly.",
+                     "Thanks for trying that. Let me look into this for you and I'll get back to you shortly."):
+            self.assertTrue(s.is_holding_reply(text), text)
+        for text in ("Thanks, it's all set.", "Thanks for sending that over.", "Glad it all worked out.",
+                     "Thanks for letting me know. I'll communicate directly with the guests through the app going forward.",
+                     "Thanks for checking! The dates from 11/30 through 12/31 are open.",
+                     "I'm looking into the Wi-Fi issue for you now. I'll get back to you shortly.",
+                     "I understand the request, but I'm not able to make an exception here. I'll get back to you shortly.", ""):
+            self.assertFalse(s.is_holding_reply(text), text)
+
     def test_property_and_header(self):
         props = {"P1": {"name": "600 Sarnia Rd", "country": "Canada"}}
         prop = s.reservation_property(self.res, props)
@@ -203,7 +227,7 @@ class TaskUpdateTests(unittest.TestCase):
         self.assertEqual(t["from"], "hospitable conversation R1")
         self.assertEqual(t["notes"], "Ask about parking")
         self.assertEqual(t["deadline"], "2026-10-16")
-        self.assertEqual(len(board["open_tasks"]), 2)  # checklist still counts for duplicates
+        self.assertEqual(len(board["open_tasks"]), 1)  # checklist only; one-off tasks are listed once, as updatable
         self.assertEqual(board["keys"], {("hospitable", "R1", "55"), ("slack", "C1", "1.2")})
         self.assertEqual(board["done_group_id"], "g_done")
 

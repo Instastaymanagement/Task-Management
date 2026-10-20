@@ -80,6 +80,7 @@ THREAD_LOOKBACK_DAYS = 3   # thread replies are picked up on parents up to this 
 CONTEXT_MESSAGES = 15      # earlier messages per channel shown to Claude for context
 GUEST_CONTEXT_MESSAGES = 20  # latest messages per guest conversation shown to Claude
 NOTES_LIMIT = 1900
+NOTE_PREVIEW = 150         # characters of each open task's notes shown to Claude
 
 # Hospitable property country code -> workspace
 COUNTRY_CODES = {"US": "USA", "CA": "Canada"}
@@ -87,6 +88,31 @@ COUNTRY_CODES = {"US": "USA", "CA": "Canada"}
 SKIP_GUEST_SOURCES = {"automated"}
 
 QUO_CONTEXT_MESSAGES = 20   # latest texts per Quo conversation shown to Claude
+
+# Sentences that carry no information on their own: thanks, greetings, "I'll get back to you".
+# A host or team message made only of these is shown as [context], never [NEW], so a
+# conversation whose only new messages are such replies doesn't cost a Claude call.
+_NAME = r"(?:,? [A-Z][\w'-]*)?"
+_SOON = r"(?: (?:soon|shortly|as soon as (?:i can|possible)|right away))?"
+_BACK = rf"(?:(?:and )?(?:i'll |i will |will )?(?:get back to you|be in touch|follow up){_SOON})"
+HOLDING_SENTENCES = [re.compile(rf"^{p}[.!]*$", re.I) for p in (
+    rf"(?:hi|hello|hey|good (?:morning|afternoon|evening)){_NAME}",
+    rf"(?:thanks|thank you)(?: so much| very much)?(?: for (?:asking|checking(?: in)?|letting (?:me|us) know|"
+    rf"the (?:update|message|heads up)|reaching out|your (?:message|patience)|trying that|your understanding))?{_NAME}",
+    rf"(?:you're|you are) (?:very |so |most )?welcome{_NAME}",
+    rf"(?:i've|i have) received your message(?:,? and {_BACK})?",
+    rf"(?:sorry|i'm sorry|apologies) for the (?:trouble|inconvenience|delay)(?: with this)?",
+    rf"(?:let me|i'll|i will|i'm|i am) (?:take a look|look(?:ing)? into (?:this|it|that)|check(?:ing)? (?:on )?(?:this|that|it))"
+    rf"(?: for you)?(?: now)?(?:,? {_BACK})?",
+    _BACK,
+)]
+
+
+def is_holding_reply(text):
+    """True if every sentence is a pleasantry or a promise to get back, with nothing else in it."""
+    text = re.sub(r"[\u200b\u200c\u200d\ufeff]", "", text or "").replace("\u2019", "'")
+    sentences = [x.strip() for x in re.split(r"(?<=[.!?])\s+", " ".join(text.split())) if x.strip()]
+    return bool(sentences) and all(any(p.match(x) for p in HOLDING_SENTENCES) for x in sentences)
 
 SOURCE_KEY_RE = re.compile(r"\[(slack|hospitable|quo) ([\w-]+) ([\w.]+)\]")
 SKIP_SUBTYPES = {"channel_join", "channel_leave", "channel_topic", "channel_purpose", "channel_name",
@@ -107,7 +133,8 @@ Not tasks: greetings, FYIs, status updates about work already finished, question
 Rules:
 - Only take tasks from messages marked [NEW]. Messages marked [context] are earlier conversation shown so you understand the [NEW] ones; never create a task from a [context] message alone.
 - Skip a task if a later message in the conversation shows it is already done or cancelled.
-- Skip a task if it is already on the list of open tasks you are given.
+- Never create a second task for work that is already an open task. Before adding a task, compare it with every open task: if it is the same piece of work (same guest or person, same property, same problem or request), even if it is worded differently, came from a different message, or came through a different source (Slack, Quo or the guest conversation), do not add it. If the [NEW] messages add anything about it (new details, progress, a new date, it is done), return a task_updates entry for that open task instead.
+- Only add a task for work that no open task covers. A follow-up step on the same job (e.g. "confirm the tech's arrival" after "book the tech") is an update to the open task, not a new task, unless it needs a different person to do clearly separate work.
 - One task per piece of work. If several messages talk about the same job, return it once, citing the message where it was asked for.
 - title: a short imperative line (under 80 characters) that names the property when one is mentioned, e.g. "Replace smoke detector battery at 600 Sarnia Rd".
 - details: one to three sentences with what is needed and any specifics from the conversation (amounts, times, guest names, unit numbers). Don't invent anything.
@@ -405,6 +432,8 @@ def guest_transcript(res, prop, checkpoint, now):
     lines, new_count = [], 0
     for m in msgs:
         is_new = iso_ts(m["created_at"]) > checkpoint
+        if m.get("sender_type") != "guest" and is_holding_reply(m["body"]):
+            is_new = False
         if m.get("sender_type") == "guest":
             who = f"{guest} (guest)"
         else:
@@ -503,7 +532,8 @@ def quo_transcript(line, convo, checkpoint, now):
             continue
         who = "team" if m.get("direction") == "outgoing" else (m.get("from") or "contact")
         if iso_ts(m["createdAt"]) <= now:
-            entries.append((m["createdAt"], m["id"], who, " ".join(m["text"].split()), iso_ts(m["createdAt"]) > checkpoint))
+            is_new = iso_ts(m["createdAt"]) > checkpoint and not (who == "team" and is_holding_reply(m["text"]))
+            entries.append((m["createdAt"], m["id"], who, " ".join(m["text"].split()), is_new))
     entries.sort(key=lambda e: e[0])
     lines, new_count = [], 0
     for created, eid, who, text, is_new in entries[-QUO_CONTEXT_MESSAGES:]:
@@ -604,13 +634,15 @@ def load_board(country):
         group = (it.get("group") or {}).get("title")
         if group == DONE_GROUP or vals.get(cols["Status"]) == DONE_STATUS:
             continue
-        open_tasks.append(f"- [{country}] {it['name']} (assigned: {vals.get(cols['Person']) or 'nobody'})")
         # Only one-off tasks are closed automatically; the daily and weekly checklists recur.
-        if group == TASK_GROUP:
+        # One-off tasks are listed once, with their ids, in the updatable list.
+        if group != TASK_GROUP:
+            open_tasks.append(f"- [{country}] {it['name']} (assigned: {vals.get(cols['Person']) or 'nobody'})")
+        else:
             updatable[int(it["id"])] = {
                 "id": int(it["id"]), "country": country, "name": it["name"], "status": vals.get(cols["Status"]),
                 "assigned": vals.get(cols["Person"]) or "nobody", "deadline": vals.get(cols["Deadline"]) or "none",
-                "notes": " ".join(SOURCE_KEY_RE.sub("", notes).split())[:400],
+                "notes": " ".join(SOURCE_KEY_RE.sub("", notes).split())[:NOTE_PREVIEW],
                 "from": ", ".join(f"{src} conversation {conv}" for src, conv, _ in item_keys) or "unknown",
             }
     return {"country": country, "board_id": ws["tasks_board"], "cols": cols,
@@ -732,9 +764,9 @@ def build_reference(team, catalog):
 def build_prompt(transcripts, open_tasks, now, updatable=()):
     """(open tasks, conversations) user blocks. The open tasks change only when a task does, so
     they get their own cache breakpoint; the conversations and the time come last, uncached."""
-    parts = ["Open tasks already on the boards (don't add these again):",
+    parts = ["Recurring checklist tasks on the boards (never add these again, never update them):",
              "\n".join(open_tasks[-300:]) or "(none)", "",
-             "Open one-off tasks you can update (task_updates):"]
+             "Open one-off tasks (don't add these again; when new messages are about one, update it with task_updates):"]
     parts += [f"- id {t['id']} [{t['country']}] {t['name']} | status {t['status'] or 'none'} | assigned {t['assigned']} | "
               f"deadline {t['deadline']} | from {t['from']} | notes: {t['notes']}" for t in updatable] or ["(none)"]
     local = dt.datetime.fromtimestamp(now, LOCAL_TZ)
@@ -795,6 +827,11 @@ def annotate(title, lines, chunk_chars=3500, max_chunks=9):
         body = chunk.rstrip().replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
         suffix = f" ({i}/{len(chunks)})" if len(chunks) > 1 else ""
         log(f"::notice title={title}{suffix}::{body}")
+
+
+def same_title(title):
+    """Task title reduced to lowercase words, for spotting the same task added twice."""
+    return " ".join(re.findall(r"[a-z0-9]+", (title or "").lower()))
 
 
 def permalink_for(team_url, channel_id, ts):
@@ -893,6 +930,10 @@ def main():
     log(f"Claude found {len(tasks)} task(s) and {len(updates)} update(s) to open tasks")
 
     seen = boards["USA"]["keys"] | boards["Canada"]["keys"]
+    # Last guard against double entries: a "new" task with the same title as an open one
+    # (or one already added this run) becomes a note on that task instead.
+    by_title = {(t["country"], same_title(t["name"])): t["id"] for t in updatable.values()}
+    updated_ids = {up["item_id"] for up in updates}
     names = {u["id"]: u["name"] for u in m_users}
     created, report, skipped = 0, [], 0
     for task in tasks:
@@ -906,6 +947,17 @@ def main():
                  else quo_convos.get(task["source_conversation"]) if task["source"] == "quo" else None)
         country = guest["country"] if guest and guest["country"] in WORKSPACES else task["country"]
         country = country if country in WORKSPACES else DEFAULT_COUNTRY
+        title_key = (country, same_title(task["title"]))
+        if title_key in by_title:
+            twin = by_title[title_key]
+            log(f"= same as open task {twin or 'added this run'}: {task['title']}")
+            skipped += 1
+            if twin and twin not in updated_ids:
+                updates.append({"item_id": twin, "action": "note", "comment": task["details"],
+                                "new_deadline": "", "source_message": task["source_message"]})
+                updated_ids.add(twin)
+            continue
+        by_title[title_key] = None
         task["deadline"] = clean_deadline(task.get("deadline"), today)
         prop_ids = task_properties(task, country, catalog, (guest or {}).get("hospitable_property_id"))
         prop_names = {r["id"]: r["name"] for r in catalog.get(country) or []}
