@@ -57,7 +57,7 @@ SLACK_API = "https://slack.com/api"
 HOSPITABLE_API = "https://public.api.hospitable.com/v2"
 QUO_API = "https://api.openphone.com/v1"
 MONDAY_API = "https://api.monday.com/v2"
-MODEL = "claude-opus-5-5"
+MODEL = "claude-sonnet-5-5"
 
 # Daily Tasks board and Properties Master board in each workspace
 WORKSPACES = {
