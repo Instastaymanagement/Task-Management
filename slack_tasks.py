@@ -764,16 +764,17 @@ def extract_tasks(client, reference, board_text, convo_text):
         ]}],
     )
     u = response.usage
-    log(f"Claude usage: {u.input_tokens} uncached + {u.cache_read_input_tokens or 0} cache read + "
-        f"{u.cache_creation_input_tokens or 0} cache write input tokens, {u.output_tokens} output tokens")
+    usage = (f"Claude tokens: {u.input_tokens} uncached + {u.cache_read_input_tokens or 0} cache read + "
+             f"{u.cache_creation_input_tokens or 0} cache write in, {u.output_tokens} out")
+    log(usage)
     if response.stop_reason == "refusal":
         log("! Claude declined this batch")
-        return [], []
+        return [], [], usage
     if response.stop_reason == "max_tokens":
         raise RuntimeError("Claude's answer was cut off (max_tokens); the checkpoint was not moved")
     text = "".join(b.text for b in response.content if b.type == "text")
     data = json.loads(text)
-    return data["tasks"], data.get("task_updates") or []
+    return data["tasks"], data.get("task_updates") or [], usage
 
 
 # --------------------------------------------------------------------------- main
@@ -887,7 +888,7 @@ def main():
     )
     board_text, convo_text = build_prompt(transcripts, open_tasks, now,
                                           sorted(updatable.values(), key=lambda t: t["id"]))
-    tasks, updates = extract_tasks(client, build_reference(team_list(m_users, s_users), catalog),
+    tasks, updates, usage = extract_tasks(client, build_reference(team_list(m_users, s_users), catalog),
                                    board_text, convo_text)
     log(f"Claude found {len(tasks)} task(s) and {len(updates)} update(s) to open tasks")
 
@@ -953,7 +954,7 @@ def main():
     summary = (f"{new_total} new message(s), {len(tasks)} task(s) found, {skipped} already on monday, "
                f"{created} created, {len(handled)} open task(s) updated" + ("" if DRY_RUN else f" ({changed} applied)"))
     log(f"\nDone. {summary}")
-    annotate(f"Tasks{' (dry run)' if DRY_RUN else ''}", [summary, *report])
+    annotate(f"Tasks{' (dry run)' if DRY_RUN else ''}", [summary, usage, *report])
 
 
 if __name__ == "__main__":
