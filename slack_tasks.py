@@ -138,8 +138,7 @@ Not tasks: greetings, FYIs, status updates about work already finished, question
 Rules:
 - Only take tasks from messages marked [NEW]. Messages marked [context] are earlier conversation shown so you understand the [NEW] ones; never create a task from a [context] message alone.
 - Skip a task if a later message in the conversation shows it is already done or cancelled.
-- Never create a second task for work that is already an open task. Before adding a task, compare it with every open task: if it is the same piece of work (same guest or person, same property, same problem or request), even if it is worded differently, came from a different message, or came through a different source (Slack, Quo or the guest conversation), do not add it. If the [NEW] messages add anything about it (new details, progress, a new date, it is done), return a task_updates entry for that open task instead.
-- Only add a task for work that no open task covers. A follow-up step on the same job (e.g. "confirm the tech's arrival" after "book the tech") is an update to the open task, not a new task, unless it needs a different person to do clearly separate work.
+- Skip a task if it is already on the list of open tasks you are given.
 - One task per piece of work. If several messages talk about the same job, return it once, citing the message where it was asked for.
 - title: a short imperative line (under 80 characters) that names the property when one is mentioned, e.g. "Replace smoke detector battery at 600 Sarnia Rd".
 - details: one to three sentences with what is needed and any specifics from the conversation (amounts, times, guest names, unit numbers). Don't invent anything.
@@ -773,9 +772,9 @@ def build_reference(team, catalog):
 def build_prompt(transcripts, open_tasks, now, updatable=()):
     """(open tasks, conversations) user blocks. The open tasks change only when a task does, so
     they get their own cache breakpoint; the conversations and the time come last, uncached."""
-    parts = ["Recurring checklist tasks on the boards (never add these again, never update them):",
+    parts = ["Open tasks already on the boards (don't add these again):",
              "\n".join(open_tasks[-300:]) or "(none)", "",
-             "Open one-off tasks (don't add these again; when new messages are about one, update it with task_updates):"]
+             "Open one-off tasks, also already on the boards (don't add these again), that you can update (task_updates):"]
     parts += [f"- id {t['id']} [{t['country']}] {t['name']} | status {t['status'] or 'none'} | assigned {t['assigned']} | "
               f"deadline {t['deadline']} | from {t['from']} | notes: {t['notes']}" for t in updatable] or ["(none)"]
     local = dt.datetime.fromtimestamp(now, LOCAL_TZ)
@@ -836,11 +835,6 @@ def annotate(title, lines, chunk_chars=3500, max_chunks=9):
         body = chunk.rstrip().replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
         suffix = f" ({i}/{len(chunks)})" if len(chunks) > 1 else ""
         log(f"::notice title={title}{suffix}::{body}")
-
-
-def same_title(title):
-    """Task title reduced to lowercase words, for spotting the same task added twice."""
-    return " ".join(re.findall(r"[a-z0-9]+", (title or "").lower()))
 
 
 def permalink_for(team_url, channel_id, ts):
@@ -939,10 +933,6 @@ def main():
     log(f"Claude found {len(tasks)} task(s) and {len(updates)} update(s) to open tasks")
 
     seen = boards["USA"]["keys"] | boards["Canada"]["keys"]
-    # Last guard against double entries: a "new" task with the same title as an open one
-    # (or one already added this run) becomes a note on that task instead.
-    by_title = {(t["country"], same_title(t["name"])): t["id"] for t in updatable.values()}
-    updated_ids = {up["item_id"] for up in updates}
     names = {u["id"]: u["name"] for u in m_users}
     created, report, skipped = 0, [], 0
     for task in tasks:
@@ -956,17 +946,6 @@ def main():
                  else quo_convos.get(task["source_conversation"]) if task["source"] == "quo" else None)
         country = guest["country"] if guest and guest["country"] in WORKSPACES else task["country"]
         country = country if country in WORKSPACES else DEFAULT_COUNTRY
-        title_key = (country, same_title(task["title"]))
-        if title_key in by_title:
-            twin = by_title[title_key]
-            log(f"= same as open task {twin or 'added this run'}: {task['title']}")
-            skipped += 1
-            if twin and twin not in updated_ids:
-                updates.append({"item_id": twin, "action": "note", "comment": task["details"],
-                                "new_deadline": "", "source_message": task["source_message"]})
-                updated_ids.add(twin)
-            continue
-        by_title[title_key] = None
         task["deadline"] = clean_deadline(task.get("deadline"), today)
         prop_ids = task_properties(task, country, catalog, (guest or {}).get("hospitable_property_id"))
         prop_names = {r["id"]: r["name"] for r in catalog.get(country) or []}

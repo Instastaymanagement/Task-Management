@@ -6,7 +6,7 @@ Every **5 minutes**, this workflow reads new Slack messages and guest conversati
    - **Slack:** new messages and thread replies in every channel the bot has been invited to.
    - **Quo:** new text messages on the London (Canada) and Boston (USA) Quo numbers. Calls aren't read, and the "Primary" number isn't linked. Tasks from the London number go on the Canada board, tasks from the Boston number on the USA board (set in `QUO_NUMBERS` in the workflow).
    - **Hospitable:** new messages in every guest conversation (reservations from 6 months ago to a year ahead). Templated automated messages are left out, and so are host replies that only say thanks or "I'll get back to you" (see below).
-2. **Find:** Claude reads the conversation and picks out real tasks (things someone was asked to do, agreed to do, or clearly needs to do). It skips chit-chat, FYIs and work that's already done. If a message is about a task that's already open, it updates that task instead of adding a second one (see below). For each task it decides:
+2. **Find:** Claude reads the conversation and picks out real tasks (things someone was asked to do, agreed to do, or clearly needs to do). It skips chit-chat, FYIs, work that's already done, and tasks already open on the boards. For each task it decides:
    - **who** should do it (whoever was asked, @-tagged, or said "I'll do it"),
    - **USA or Canada**, from the property, city, or channel (it's given both Properties Master lists). Guest conversations always go to the country of the reservation's property.
    - a **deadline**, if one was mentioned ("by Friday", "tomorrow").
@@ -39,10 +39,6 @@ If the conversation sets a new date, the deadline is moved. Every change leaves 
 From guest conversations, Claude picks out work the team has to do for the stay: repairs, missing items, supplies, cleaning, laundry, early check-in or late checkout to arrange, refunds or charges, complaints to follow up, and anything a host reply promised. Questions the host already fully answered (wifi, parking, directions) are skipped.
 
 If a task can't be tied to a country, it goes on the Canada board. Change `DEFAULT_COUNTRY` in the workflow to change this.
-
-### No double entries
-
-Claude compares every task it finds with the open tasks. If it's the same piece of work (same guest or person, same property, same problem), even worded differently or from another message or source, it adds an update to the open task instead of creating a new one. As a last check, a new task with the same title as an open task becomes a note on that task.
 
 ### Messages that don't need Claude
 
