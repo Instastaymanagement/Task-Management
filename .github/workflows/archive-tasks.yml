@@ -1,0 +1,42 @@
+name: Archive finished tasks
+
+on:
+  schedule:
+    # 10 pm Toronto: 02:00 UTC in summer (EDT), 03:00 UTC in winter (EST).
+    # Both are scheduled; the script only acts during the 10 pm hour in Toronto.
+    - cron: "0 2 * * *"
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "List the tasks that would be moved without moving them"
+        type: boolean
+        default: true
+
+# Don't move items while a task scan is reading or updating the boards.
+concurrency:
+  group: slack-tasks
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Move finished tasks to Tasks Archived
+        env:
+          MONDAY_API_TOKEN: ${{ secrets.MONDAY_API_TOKEN }}
+          # Scheduled runs move tasks for real; manual runs default to a dry run and can run any time.
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'true' || 'false' }}
+          FORCE: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
+        run: python archive_tasks.py

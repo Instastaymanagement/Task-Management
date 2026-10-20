@@ -59,12 +59,17 @@ QUO_API = "https://api.openphone.com/v1"
 MONDAY_API = "https://api.monday.com/v2"
 MODEL = "claude-opus-5-5"
 
-# Daily Tasks board and Properties Master board in each workspace
+# Daily Tasks, Tasks Archived (finished tasks, moved nightly by archive_tasks.py) and
+# Properties Master boards in each workspace
 WORKSPACES = {
-    "USA": {"name": "USA Automated (Trial)", "tasks_board": 18435520178, "properties_board": 18435507823},
-    "Canada": {"name": "Canada Automated(Trial)", "tasks_board": 18435476578, "properties_board": 18435476437},
+    "USA": {"name": "USA Automated (Trial)", "tasks_board": 18435520178, "archive_board": 18436333164,
+            "properties_board": 18435507823},
+    "Canada": {"name": "Canada Automated(Trial)", "tasks_board": 18435476578, "archive_board": 18436333159,
+               "properties_board": 18435476437},
 }
 TASK_GROUP = "Other task"
+# Groups that repeat; their items are never closed or updated automatically
+RECURRING_GROUPS = {"Daily Checklist", "Weekly Tasks"}
 DONE_GROUP = "Completed task"
 DONE_STATUS = "Done"
 PROGRESS_STATUS = "Working on it"
@@ -626,6 +631,9 @@ def load_board(country):
             raise RuntimeError(f"Daily Tasks board in {ws['name']} has no '{title}' column")
     items = board_items(ws["tasks_board"], [cols["Person"], cols["Status"], cols["Notes/Updates"], cols["Deadline"]])
     keys, open_tasks, updatable = set(), [], {}
+    # Archived tasks still block their source message from creating a task again.
+    for it in board_items(ws["archive_board"], [cols["Notes/Updates"]]):
+        keys.update(SOURCE_KEY_RE.findall(" ".join(c["text"] or "" for c in it["column_values"])))
     for it in items:
         vals = {c["id"]: c["text"] or "" for c in it["column_values"]}
         notes = vals.get(cols["Notes/Updates"], "")
@@ -635,8 +643,9 @@ def load_board(country):
         if group == DONE_GROUP or vals.get(cols["Status"]) == DONE_STATUS:
             continue
         # Only one-off tasks are closed automatically; the daily and weekly checklists recur.
-        # One-off tasks are listed once, with their ids, in the updatable list.
-        if group != TASK_GROUP:
+        # One-off tasks (in "Other task" or any other non-recurring group, such as "Overdue &
+        # Due Today") are listed once, with their ids, in the updatable list.
+        if group in RECURRING_GROUPS:
             open_tasks.append(f"- [{country}] {it['name']} (assigned: {vals.get(cols['Person']) or 'nobody'})")
         else:
             updatable[int(it["id"])] = {

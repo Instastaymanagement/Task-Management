@@ -5,8 +5,8 @@ Every **5 minutes**, this workflow reads new Slack messages and guest conversati
 1. **Read:** picks up everything new since the last run:
    - **Slack:** new messages and thread replies in every channel the bot has been invited to.
    - **Quo:** new text messages on the London (Canada) and Boston (USA) Quo numbers. Calls aren't read, and the "Primary" number isn't linked. Tasks from the London number go on the Canada board, tasks from the Boston number on the USA board (set in `QUO_NUMBERS` in the workflow).
-   - **Hospitable:** new messages in every guest conversation (reservations from 6 months ago to a year ahead). Templated automated messages are left out.
-2. **Find:** Claude reads the conversation and picks out real tasks (things someone was asked to do, agreed to do, or clearly needs to do). It skips chit-chat, FYIs, work that's already done, and tasks already open on the boards. For each task it decides:
+   - **Hospitable:** new messages in every guest conversation (reservations from 6 months ago to a year ahead). Templated automated messages are left out, and so are host replies that only say thanks or "I'll get back to you" (see below).
+2. **Find:** Claude reads the conversation and picks out real tasks (things someone was asked to do, agreed to do, or clearly needs to do). It skips chit-chat, FYIs and work that's already done. If a message is about a task that's already open, it updates that task instead of adding a second one (see below). For each task it decides:
    - **who** should do it (whoever was asked, @-tagged, or said "I'll do it"),
    - **USA or Canada**, from the property, city, or channel (it's given both Properties Master lists). Guest conversations always go to the country of the reservation's property.
    - a **deadline**, if one was mentioned ("by Friday", "tomorrow").
@@ -28,7 +28,7 @@ Each new item goes in the **Other task** group with:
 
 ### Closing and updating tasks
 
-Each run also checks the open tasks in **Other task** against the new messages. Claude only acts on what the new messages show:
+Each run also checks the open one-off tasks (every group except Daily Checklist and Weekly Tasks) against the new messages. Claude only acts on what the new messages show:
 
 - **Done:** the work was finished, the question was answered, or the task was cancelled. Example: a host reply in Hospitable that gives the guest the parking rules closes "Reply to Heather about parking". The status is set to **Done** and the item moves to **Completed task**.
 - **In progress:** someone took it on but hasn't finished. The status is set to **Working on it**.
@@ -39,6 +39,18 @@ If the conversation sets a new date, the deadline is moved. Every change leaves 
 From guest conversations, Claude picks out work the team has to do for the stay: repairs, missing items, supplies, cleaning, laundry, early check-in or late checkout to arrange, refunds or charges, complaints to follow up, and anything a host reply promised. Questions the host already fully answered (wifi, parking, directions) are skipped.
 
 If a task can't be tied to a country, it goes on the Canada board. Change `DEFAULT_COUNTRY` in the workflow to change this.
+
+### No double entries
+
+Claude compares every task it finds with the open tasks. If it's the same piece of work (same guest or person, same property, same problem), even worded differently or from another message or source, it adds an update to the open task instead of creating a new one. As a last check, a new task with the same title as an open task becomes a note on that task.
+
+### Messages that don't need Claude
+
+Host replies in Hospitable and outgoing Quo texts made only of thanks, greetings and "I'll get back to you" lines (e.g. "Thanks for asking. I've received your message and will get back to you.") are shown to Claude as earlier conversation, not as new messages. If they're the only new messages, the run skips the Claude call. A reply with anything else in it, such as dates, a decision or a promise of specific work, is read as normal. Guest messages are always read.
+
+### Nightly archive
+
+Every night at 10 pm Toronto time, `.github/workflows/archive-tasks.yml` moves finished tasks from each Daily Tasks board to the **Tasks Archived** board in the same workspace (USA `18436333164`, Canada `18436333159`), into its Completed task group. That's everything in Completed task, plus anything marked Done in another one-off group. Daily Checklist and Weekly Tasks items are never moved. Comments, files and the property link come along. To preview, run *Archive finished tasks* manually with **dry_run** ticked.
 
 ## Setup
 

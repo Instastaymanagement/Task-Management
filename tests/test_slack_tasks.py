@@ -299,3 +299,21 @@ class SchemaTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ArchiveTests(unittest.TestCase):
+    def test_moves_only_finished_one_off_tasks(self):
+        import archive_tasks as a
+        page = {"boards": [{"items_page": {"cursor": None, "items": [
+            {"id": "1", "name": "Fixed leak", "group": {"title": "Completed task"},
+             "column_values": [{"id": "status", "text": "Done"}, {"id": "rel", "text": None, "linked_item_ids": ["77"]}]},
+            {"id": "2", "name": "Paid vendor", "group": {"title": "Overdue & Due Today"},
+             "column_values": [{"id": "status", "text": "Done"}, {"id": "rel", "text": None}]},
+            {"id": "3", "name": "Morning check", "group": {"title": "Daily Checklist"},
+             "column_values": [{"id": "status", "text": "Done"}]},
+            {"id": "4", "name": "Reply to guest", "group": {"title": "Other task"},
+             "column_values": [{"id": "status", "text": "Working on it"}]},
+        ]}}]}
+        with mock.patch.object(a, "monday", return_value=page):
+            items = a.finished_items(1, "status", "rel")
+        self.assertEqual([(i["id"], i["properties"]) for i in items], [(1, [77]), (2, [])])
