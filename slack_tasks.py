@@ -719,35 +719,53 @@ def team_list(m_users, s_users):
     return "\n".join(lines)
 
 
-def build_prompt(transcripts, team, catalog, open_tasks, now, updatable=()):
-    local = dt.datetime.fromtimestamp(now, LOCAL_TZ)
-    parts = [f"Current time: {fmt_ts(now)} ({local.strftime('%A %Y-%m-%d %H:%M')} Eastern). "
-             f"Today is {local.date().isoformat()}.", "", "Team (monday users you can assign):", team, ""]
+def build_reference(team, catalog):
+    """Team and property lists. They rarely change, so they're cached with the system prompt."""
+    parts = ["Team (monday users you can assign):", team, ""]
     for country, rows in catalog.items():
         parts.append(f"{country} properties (Properties Master id: name, address):")
         parts += [f"- {r['id']}: {r['name']}" + (f", {r['address']}" if r["address"] else "") for r in rows] or ["(none listed)"]
         parts.append("")
-    parts += ["", "Open tasks already on the boards (don't add these again):",
-              "\n".join(open_tasks[-300:]) or "(none)", "",
-              "Open one-off tasks you can update (task_updates):"]
-    parts += [f"- id {t['id']} [{t['country']}] {t['name']} | status {t['status'] or 'none'} | assigned {t['assigned']} | "
-              f"deadline {t['deadline']} | from {t['from']} | notes: {t['notes']}" for t in updatable] or ["(none)"]
-    parts += ["", "Conversations:"]
-    for header, lines in transcripts:
-        parts += ["", header, *lines]
     return "\n".join(parts)
 
 
-def extract_tasks(client, prompt):
+def build_prompt(transcripts, open_tasks, now, updatable=()):
+    """(open tasks, conversations) user blocks. The open tasks change only when a task does, so
+    they get their own cache breakpoint; the conversations and the time come last, uncached."""
+    parts = ["Open tasks already on the boards (don't add these again):",
+             "\n".join(open_tasks[-300:]) or "(none)", "",
+             "Open one-off tasks you can update (task_updates):"]
+    parts += [f"- id {t['id']} [{t['country']}] {t['name']} | status {t['status'] or 'none'} | assigned {t['assigned']} | "
+              f"deadline {t['deadline']} | from {t['from']} | notes: {t['notes']}" for t in updatable] or ["(none)"]
+    local = dt.datetime.fromtimestamp(now, LOCAL_TZ)
+    convo = [f"Current time: {fmt_ts(now)} ({local.strftime('%A %Y-%m-%d %H:%M')} Eastern). "
+             f"Today is {local.date().isoformat()}.", "", "Conversations:"]
+    for header, lines in transcripts:
+        convo += ["", header, *lines]
+    return "\n".join(parts), "\n".join(convo)
+
+
+# Calls are usually more than 5 minutes apart, so the default cache would expire between them.
+CACHE = {"type": "ephemeral", "ttl": "1h"}
+
+
+def extract_tasks(client, reference, board_text, convo_text):
     response = client.beta.messages.create(
         model=MODEL,
         max_tokens=16000,
         output_config={"effort": "medium", "format": {"type": "json_schema", "schema": OUTPUT_SCHEMA}},
         betas=["server-side-fallback-2026-07-01"],
         fallbacks="default",
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": prompt}],
+        system=[{"type": "text", "text": SYSTEM_PROMPT},
+                {"type": "text", "text": reference, "cache_control": CACHE}],
+        messages=[{"role": "user", "content": [
+            {"type": "text", "text": board_text, "cache_control": CACHE},
+            {"type": "text", "text": convo_text},
+        ]}],
     )
+    u = response.usage
+    log(f"Claude usage: {u.input_tokens} uncached + {u.cache_read_input_tokens or 0} cache read + "
+        f"{u.cache_creation_input_tokens or 0} cache write input tokens, {u.output_tokens} output tokens")
     if response.stop_reason == "refusal":
         log("! Claude declined this batch")
         return [], []
@@ -867,9 +885,10 @@ def main():
     client = anthropic.Anthropic(
         default_headers={"anthropic-workspace-id": workspace_id} if workspace_id else None,
     )
-    prompt = build_prompt(transcripts, team_list(m_users, s_users), catalog, open_tasks, now,
-                          sorted(updatable.values(), key=lambda t: t["id"]))
-    tasks, updates = extract_tasks(client, prompt)
+    board_text, convo_text = build_prompt(transcripts, open_tasks, now,
+                                          sorted(updatable.values(), key=lambda t: t["id"]))
+    tasks, updates = extract_tasks(client, build_reference(team_list(m_users, s_users), catalog),
+                                   board_text, convo_text)
     log(f"Claude found {len(tasks)} task(s) and {len(updates)} update(s) to open tasks")
 
     seen = boards["USA"]["keys"] | boards["Canada"]["keys"]
