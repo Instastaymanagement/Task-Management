@@ -33,7 +33,7 @@ jobs:
           cache: pip
       - name: Install dependencies
         run: pip install -r requirements.txt
-      - name: Move finished tasks to Tasks Archived
+      - name: Move finished tasks to Task Hub · Archive
         env:
           MONDAY_API_TOKEN: ${{ secrets.MONDAY_API_TOKEN }}
           # Scheduled runs move tasks for real; manual runs default to a dry run and can run any time.

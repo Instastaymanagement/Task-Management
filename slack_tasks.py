@@ -10,10 +10,10 @@
    the USA or the Canada portfolio (guest
    conversations go to the country of their property, Quo conversations to the
    country of the Quo number).
-3. Creates each task on the "Daily Tasks" board of the matching monday.com
-   folder (Instastay Automated → USA / Canada), in the "Other task" group,
-   with the person assigned so monday notifies them and the property linked
-   to its row in that workspace's Properties Master.
+3. Creates each task on the "Task Hub" board (Instastay Automated → Task Hub),
+   in the "Other task" group, with its Country set, the person assigned so
+   monday notifies them, and the property linked to its row in that country's
+   Properties Master.
 4. Checks the open tasks in "Other task" against the same conversations: a task
    the conversation shows was handled is marked Done and moved to "Completed
    task"; progress on one updates its status or deadline. Every change is
@@ -28,7 +28,7 @@ Environment:
   MONDAY_API_TOKEN      monday.com API token (required)
   HOSPITABLE_API_TOKEN  Hospitable personal access token; guest conversations are skipped without it
   QUO_API_KEY           Quo (OpenPhone) API key; Quo texts are skipped without it
-  QUO_NUMBERS           which Quo number belongs to which board, e.g. "+15195550100=Canada,+16175550100=USA"
+  QUO_NUMBERS           which Quo number belongs to which country, e.g. "+15195550100=Canada,+16175550100=USA"
   CANDIDATE_BOARD       monday board of job candidates (Vacancies); their Quo texts are left to HR-Interview
   ANTHROPIC_API_KEY     Claude API key (required)
   ANTHROPIC_WORKSPACE_ID  workspace for the key; needed only if the key isn't scoped to one
@@ -37,7 +37,7 @@ Environment:
   FIRST_RUN_HOURS       how far back to read when there is no checkpoint yet (default 2)
   LOOKBACK_HOURS        read this many hours back instead of from the checkpoint (for manual re-scans)
   SLACK_CHANNELS        optional comma-separated channel names to limit the scan to
-  DEFAULT_COUNTRY       board to use when a task can't be tied to a country (default Canada)
+  DEFAULT_COUNTRY       country to use when a task can't be tied to one (default Canada)
 """
 
 import datetime as dt
@@ -59,13 +59,15 @@ QUO_API = "https://api.openphone.com/v1"
 MONDAY_API = "https://api.monday.com/v2"
 MODEL = "claude-opus-5-5"
 
-# Daily Tasks, Tasks Archived (finished tasks, moved nightly by archive_tasks.py) and
-# Properties Master boards in each workspace
+# Task Hub: one board for USA and Canada tasks (its Country column says which), and its
+# archive (finished tasks, moved nightly by archive_tasks.py)
+HUB = {"name": "Task Hub", "tasks_board": 18436688444, "archive_board": 18436688447}
+COUNTRY_COLUMN = "Country"
+SHARED_COUNTRY = "Both"  # the Daily Checklist is the same for both countries
+# Properties Master board of each country
 WORKSPACES = {
-    "USA": {"name": "Instastay Automated · USA", "tasks_board": 18435520178, "archive_board": 18436333164,
-            "properties_board": 18435507823},
-    "Canada": {"name": "Instastay Automated · Canada", "tasks_board": 18435476578, "archive_board": 18436333159,
-               "properties_board": 18435476437},
+    "USA": {"properties_board": 18435507823},
+    "Canada": {"properties_board": 18435476437},
 }
 TASK_GROUP = "Other task"
 # Groups that repeat; their items are never closed or updated automatically
@@ -622,16 +624,16 @@ def board_items(board_id, column_ids):
     return items
 
 
-def load_board(country):
-    ws = WORKSPACES[country]
-    cols, groups = board_layout(ws["tasks_board"])
-    for title in ("Person", "Status", "Deadline", "Notes/Updates"):
+def load_board():
+    cols, groups = board_layout(HUB["tasks_board"])
+    for title in ("Person", "Status", "Deadline", "Notes/Updates", COUNTRY_COLUMN):
         if title not in cols:
-            raise RuntimeError(f"Daily Tasks board in {ws['name']} has no '{title}' column")
-    items = board_items(ws["tasks_board"], [cols["Person"], cols["Status"], cols["Notes/Updates"], cols["Deadline"]])
+            raise RuntimeError(f"{HUB['name']} board has no '{title}' column")
+    items = board_items(HUB["tasks_board"], [cols["Person"], cols["Status"], cols["Notes/Updates"], cols["Deadline"],
+                                             cols[COUNTRY_COLUMN]])
     keys, open_tasks, updatable = set(), [], {}
     # Archived tasks still block their source message from creating a task again.
-    for it in board_items(ws["archive_board"], [cols["Notes/Updates"]]):
+    for it in board_items(HUB["archive_board"], [cols["Notes/Updates"]]):
         keys.update(SOURCE_KEY_RE.findall(" ".join(c["text"] or "" for c in it["column_values"])))
     for it in items:
         vals = {c["id"]: c["text"] or "" for c in it["column_values"]}
@@ -639,6 +641,7 @@ def load_board(country):
         item_keys = SOURCE_KEY_RE.findall(notes)
         keys.update(item_keys)
         group = (it.get("group") or {}).get("title")
+        country = vals.get(cols[COUNTRY_COLUMN]) or "Unknown"
         if group == DONE_GROUP or vals.get(cols["Status"]) == DONE_STATUS:
             continue
         # Only one-off tasks are closed automatically; the daily and weekly checklists recur.
@@ -653,7 +656,7 @@ def load_board(country):
                 "notes": " ".join(SOURCE_KEY_RE.sub("", notes).split())[:NOTE_PREVIEW],
                 "from": ", ".join(f"{src} conversation {conv}" for src, conv, _ in item_keys) or "unknown",
             }
-    return {"country": country, "board_id": ws["tasks_board"], "cols": cols,
+    return {"board_id": HUB["tasks_board"], "cols": cols,
             "group_id": groups.get(TASK_GROUP), "done_group_id": groups.get(DONE_GROUP),
             "keys": keys, "open_tasks": open_tasks, "updatable": updatable}
 
@@ -697,11 +700,13 @@ def task_properties(task, country, catalog, hospitable_property_id=None):
     return [i for i in dict.fromkeys(task.get("property_ids") or []) if i in valid]
 
 
-def column_values(task, cols, valid_user_ids, notes, property_ids=()):
+def column_values(task, cols, valid_user_ids, notes, property_ids=(), country=None):
     vals = {
         cols["Status"]: {"label": NEW_STATUS},
         cols["Notes/Updates"]: notes,
     }
+    if country and COUNTRY_COLUMN in cols:
+        vals[cols[COUNTRY_COLUMN]] = {"label": country}
     if property_ids and "Property Link" in cols:
         vals[cols["Property Link"]] = {"item_ids": list(property_ids)}
     people = [i for i in dict.fromkeys(task["assignee_ids"]) if i in valid_user_ids]
@@ -718,8 +723,8 @@ def build_notes(task, source_line):
     return task["details"].strip()[: NOTES_LIMIT - len(tail)] + tail
 
 
-def create_item(board, task, valid_user_ids, source_line, property_ids=()):
-    vals = column_values(task, board["cols"], valid_user_ids, build_notes(task, source_line), property_ids)
+def create_item(board, task, valid_user_ids, source_line, property_ids=(), country=None):
+    vals = column_values(task, board["cols"], valid_user_ids, build_notes(task, source_line), property_ids, country)
     data = monday("""mutation($board:ID!, $group:String, $name:String!, $vals:JSON!){
         create_item(board_id:$board, group_id:$group, item_name:$name, column_values:$vals){id}}""",
                   {"board": board["board_id"], "group": board["group_id"], "name": task["title"][:255],
@@ -914,13 +919,12 @@ def main():
             save_state(STATE_FILE, new_state)
         return
 
-    boards = {c: load_board(c) for c in WORKSPACES}
+    board = load_board()
     m_users = monday_users()
     valid_ids = {u["id"] for u in m_users}
     catalog = {c: property_catalog(c) for c in WORKSPACES}
     today = local_today(now)
-    open_tasks = boards["USA"]["open_tasks"] + boards["Canada"]["open_tasks"]
-    updatable = {**boards["USA"]["updatable"], **boards["Canada"]["updatable"]}
+    open_tasks, updatable = board["open_tasks"], board["updatable"]
 
     workspace_id = os.environ.get("ANTHROPIC_WORKSPACE_ID", "").strip()
     client = anthropic.Anthropic(
@@ -932,7 +936,7 @@ def main():
                                    board_text, convo_text)
     log(f"Claude found {len(tasks)} task(s) and {len(updates)} update(s) to open tasks")
 
-    seen = boards["USA"]["keys"] | boards["Canada"]["keys"]
+    seen = board["keys"]
     names = {u["id"]: u["name"] for u in m_users}
     created, report, skipped = 0, [], 0
     for task in tasks:
@@ -963,7 +967,7 @@ def main():
         else:
             link = permalink_for(team_url, task["source_conversation"], task["source_message"])
             source_line = f"Slack: {link}" if link else ""
-        item_id = create_item(boards[country], task, valid_ids, source_line, prop_ids)
+        item_id = create_item(board, task, valid_ids, source_line, prop_ids, country)
         created += 1
         log(f"+ {label} (item {item_id})")
         report.append(f"ADDED {label}")
@@ -985,7 +989,7 @@ def main():
         if DRY_RUN:
             log(f"~ {label}")
             continue
-        apply_task_update(boards[target["country"]], up["item_id"], up["action"], up["comment"], deadline)
+        apply_task_update(board, up["item_id"], up["action"], up["comment"], deadline)
         changed += 1
         log(f"* {label}")
 

@@ -211,22 +211,27 @@ class TaskUpdateTests(unittest.TestCase):
         items = [
             {"id": "1", "name": "Reply to Heather", "group": {"title": "Other task"},
              "column_values": [{"id": "status", "text": "Not done"}, {"id": "person", "text": "Anna"},
-                               {"id": "date_mm7ytd1z", "text": "2026-10-16"},
+                               {"id": "date_mm7ytd1z", "text": "2026-10-16"}, {"id": "country", "text": "USA"},
                                {"id": "text_mm7xv1hm", "text": "Ask about parking\n[hospitable R1 55]"}]},
             {"id": "2", "name": "Daily check", "group": {"title": "Daily Checklist"},
-             "column_values": [{"id": "status", "text": ""}, {"id": "text_mm7xv1hm", "text": ""}]},
+             "column_values": [{"id": "status", "text": ""}, {"id": "text_mm7xv1hm", "text": ""},
+                               {"id": "country", "text": "Both"}]},
             {"id": "3", "name": "Old", "group": {"title": "Completed task"},
              "column_values": [{"id": "status", "text": "Done"}, {"id": "text_mm7xv1hm", "text": "[slack C1 1.2]"}]},
         ]
-        layout = ({"Person": "person", "Status": "status", "Deadline": "date_mm7ytd1z", "Notes/Updates": "text_mm7xv1hm"},
+        layout = ({"Person": "person", "Status": "status", "Deadline": "date_mm7ytd1z", "Notes/Updates": "text_mm7xv1hm",
+                   "Country": "country"},
                   {"Other task": "g_other", "Completed task": "g_done"})
         with mock.patch.object(s, "board_layout", return_value=layout), mock.patch.object(s, "board_items", return_value=items):
-            board = s.load_board("Canada")
+            board = s.load_board()
         self.assertEqual(list(board["updatable"]), [1])
         t = board["updatable"][1]
         self.assertEqual(t["from"], "hospitable conversation R1")
         self.assertEqual(t["notes"], "Ask about parking")
         self.assertEqual(t["deadline"], "2026-10-16")
+        self.assertEqual(t["country"], "USA")
+        self.assertEqual(board["open_tasks"], ["- [Both] Daily check (assigned: nobody)"])
+        self.assertEqual(board["board_id"], s.HUB["tasks_board"])
         self.assertEqual(len(board["open_tasks"]), 1)  # checklist only; one-off tasks are listed once, as updatable
         self.assertEqual(board["keys"], {("hospitable", "R1", "55"), ("slack", "C1", "1.2")})
         self.assertEqual(board["done_group_id"], "g_done")
@@ -261,6 +266,11 @@ class MondayValueTests(unittest.TestCase):
         self.assertEqual(vals["status"], {"label": "Not done"})
         self.assertEqual(vals["date_mm7ytd1z"], {"date": "2026-10-20"})
         self.assertEqual(vals["text_mm7xv1hm"], "notes")
+
+    def test_country_is_set_on_the_hub(self):
+        cols = {**COLS, "Country": "country"}
+        self.assertEqual(s.column_values(task(), cols, {11}, "n", country="USA")["country"], {"label": "USA"})
+        self.assertNotIn("country", s.column_values(task(), cols, {11}, "n"))
 
     def test_no_person_or_bad_deadline(self):
         vals = s.column_values(task(assignee_ids=[], deadline="Friday"), COLS, {11}, "n")
@@ -306,7 +316,8 @@ class ArchiveTests(unittest.TestCase):
         import archive_tasks as a
         page = {"boards": [{"items_page": {"cursor": None, "items": [
             {"id": "1", "name": "Fixed leak", "group": {"title": "Completed task"},
-             "column_values": [{"id": "status", "text": "Done"}, {"id": "rel", "text": None, "linked_item_ids": ["77"]}]},
+             "column_values": [{"id": "status", "text": "Done"}, {"id": "rel", "text": None, "linked_item_ids": ["77"]},
+                               {"id": "country", "text": "Canada"}]},
             {"id": "2", "name": "Paid vendor", "group": {"title": "Overdue & Due Today"},
              "column_values": [{"id": "status", "text": "Done"}, {"id": "rel", "text": None}]},
             {"id": "3", "name": "Morning check", "group": {"title": "Daily Checklist"},
@@ -315,5 +326,5 @@ class ArchiveTests(unittest.TestCase):
              "column_values": [{"id": "status", "text": "Working on it"}]},
         ]}}]}
         with mock.patch.object(a, "monday", return_value=page):
-            items = a.finished_items(1, "status", "rel")
-        self.assertEqual([(i["id"], i["properties"]) for i in items], [(1, [77]), (2, [])])
+            items = a.finished_items(1, "status", "rel", "country")
+        self.assertEqual([(i["id"], i["properties"], i["country"]) for i in items], [(1, [77], "Canada"), (2, [], "?")])

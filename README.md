@@ -4,25 +4,21 @@ Every **5 minutes**, this workflow reads new Slack messages and guest conversati
 
 1. **Read:** picks up everything new since the last run:
    - **Slack:** new messages and thread replies in every channel the bot has been invited to.
-   - **Quo:** new text messages on the London (Canada) and Boston (USA) Quo numbers. Calls aren't read, and the "Primary" number isn't linked. Tasks from the London number go on the Canada board, tasks from the Boston number on the USA board (set in `QUO_NUMBERS` in the workflow).
+   - **Quo:** new text messages on the London (Canada) and Boston (USA) Quo numbers. Calls aren't read, and the "Primary" number isn't linked. Tasks from the London number are marked Canada, tasks from the Boston number USA (set in `QUO_NUMBERS` in the workflow).
    - **Hospitable:** new messages in every guest conversation (reservations from 6 months ago to a year ahead). Templated automated messages are left out, and so are host replies that only say thanks or "I'll get back to you" (see below).
 2. **Find:** Claude reads the conversation and picks out real tasks (things someone was asked to do, agreed to do, or clearly needs to do). It skips chit-chat, FYIs, work that's already done, and tasks already open on the boards. For each task it decides:
    - **who** should do it (whoever was asked, @-tagged, or said "I'll do it"),
    - **USA or Canada**, from the property, city, or channel (it's given both Properties Master lists). Guest conversations always go to the country of the reservation's property.
    - a **deadline**, if one was mentioned ("by Friday", "tomorrow").
-3. **Add:** creates the task on the **Daily Tasks** board of the matching workspace:
-
-| Country | monday workspace | Board |
-|---|---|---|
-| USA | Instastay Automated → 🇺🇸 USA | Daily Tasks (`18435520178`) |
-| Canada | Instastay Automated → 🇨🇦 Canada | Daily Tasks (`18435476578`) |
+3. **Add:** creates the task on the **Task Hub** board (Instastay Automated → 📋 Task Hub, `18436688444`), which holds the tasks of both countries. Its **Country** column says which one a task is for (USA, Canada, or Both for the shared Daily Checklist), and its 🇺🇸 USA / 🇨🇦 Canada views filter on it.
 
 Each new item goes in the **Other task** group with:
 
 - **Name:** a short description of the task.
+- **Country:** USA or Canada.
 - **Person:** the assignee. monday notifies them.
 - **Status:** Not done.
-- **Property Link:** the property the task is about, linked to its row in that workspace's Properties Master. Guest tasks link through the property's Hospitable ID; for Slack and Quo, Claude picks the property from the Properties Master list.
+- **Property Link:** the property the task is about, linked to its row in that country's Properties Master (the column connects to both). Guest tasks link through the property's Hospitable ID; for Slack and Quo, Claude picks the property from the Properties Master list.
 - **Deadline:** always set. A date given in the conversation is used as is. Otherwise Claude sets one from urgency: today for problems affecting a staying guest or safety; the day before the next check-in for turnover work; 1–2 days for replies, laundry, deliveries and payments; 3–7 days for routine maintenance and purchases; up to 2 weeks for admin and licensing.
 - **Notes/Updates:** the details, where it came from (a link to the Slack message, or the guest, property and reservation code), and a `[slack …]` or `[hospitable …]` key. The key stops the same message from ever creating a second item.
 
@@ -38,7 +34,7 @@ If the conversation sets a new date, the deadline is moved. Every change leaves 
 
 From guest conversations, Claude picks out work the team has to do for the stay: repairs, missing items, supplies, cleaning, laundry, early check-in or late checkout to arrange, refunds or charges, complaints to follow up, and anything a host reply promised. Questions the host already fully answered (wifi, parking, directions) are skipped.
 
-If a task can't be tied to a country, it goes on the Canada board. Change `DEFAULT_COUNTRY` in the workflow to change this.
+If a task can't be tied to a country, it's marked Canada. Change `DEFAULT_COUNTRY` in the workflow to change this.
 
 ### Messages that don't need Claude
 
@@ -46,7 +42,7 @@ Host replies in Hospitable and outgoing Quo texts made only of thanks, greetings
 
 ### Nightly archive
 
-Every night at 10 pm Toronto time, `.github/workflows/archive-tasks.yml` moves finished tasks from each Daily Tasks board to the **Tasks Archived** board in the same workspace (USA `18436333164`, Canada `18436333159`), into its Completed task group. That's everything in Completed task, plus anything marked Done in another one-off group. Daily Checklist and Weekly Tasks items are never moved. Comments, files and the property link come along. To preview, run *Archive finished tasks* manually with **dry_run** ticked.
+Every night at 10 pm Toronto time, `.github/workflows/archive-tasks.yml` moves finished tasks from the Task Hub to **Task Hub · Archive** (`18436688447`), into its Completed task group. That's everything in Completed task, plus anything marked Done in another one-off group. Daily Checklist and Weekly Tasks items are never moved. Comments, files, the Country and the property link come along. To preview, run *Archive finished tasks* manually with **dry_run** ticked.
 
 ## Setup
 
