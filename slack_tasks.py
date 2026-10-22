@@ -11,7 +11,7 @@
    conversations go to the country of their property, Quo conversations to the
    country of the Quo number).
 3. Creates each task on the "Daily Tasks" board of the matching monday.com
-   workspace (USA Automated / Canada Automated), in the "Other task" group,
+   folder (Instastay Automated → USA / Canada), in the "Other task" group,
    with the person assigned so monday notifies them and the property linked
    to its row in that workspace's Properties Master.
 4. Checks the open tasks in "Other task" against the same conversations: a task
@@ -62,9 +62,9 @@ MODEL = "claude-opus-5-5"
 # Daily Tasks, Tasks Archived (finished tasks, moved nightly by archive_tasks.py) and
 # Properties Master boards in each workspace
 WORKSPACES = {
-    "USA": {"name": "USA Automated (Trial)", "tasks_board": 18435520178, "archive_board": 18436333164,
+    "USA": {"name": "Instastay Automated · USA", "tasks_board": 18435520178, "archive_board": 18436333164,
             "properties_board": 18435507823},
-    "Canada": {"name": "Canada Automated(Trial)", "tasks_board": 18435476578, "archive_board": 18436333159,
+    "Canada": {"name": "Instastay Automated · Canada", "tasks_board": 18435476578, "archive_board": 18436333159,
                "properties_board": 18435476437},
 }
 TASK_GROUP = "Other task"

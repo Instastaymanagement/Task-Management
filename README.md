@@ -14,8 +14,8 @@ Every **5 minutes**, this workflow reads new Slack messages and guest conversati
 
 | Country | monday workspace | Board |
 |---|---|---|
-| USA | USA Automated (Trial) | Daily Tasks (`18435520178`) |
-| Canada | Canada Automated(Trial) | Daily Tasks (`18435476578`) |
+| USA | Instastay Automated → 🇺🇸 USA | Daily Tasks (`18435520178`) |
+| Canada | Instastay Automated → 🇨🇦 Canada | Daily Tasks (`18435476578`) |
 
 Each new item goes in the **Other task** group with:
 
