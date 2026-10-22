@@ -16,6 +16,7 @@ Each new item goes in the **Other task** group with:
 
 - **Name:** a short description of the task.
 - **Country:** USA or Canada.
+- **Category:** one of Maintenance, Cleaning, Guest, Claims, Payments & Bills, Owners, Listings & Licensing, Admin & Hiring, picked by Claude.
 - **Person:** the assignee. monday notifies them.
 - **Status:** Not done.
 - **Property Link:** the property the task is about, linked to its row in that country's Properties Master (the column connects to both). Guest tasks link through the property's Hospitable ID; for Slack and Quo, Claude picks the property from the Properties Master list.

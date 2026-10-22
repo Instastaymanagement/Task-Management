@@ -147,6 +147,15 @@ Rules:
 - assignee_ids: the monday user ids of the people who should do it, chosen from the team list. Use whoever was asked or tagged (@name), or who said they would do it. If nobody can be identified, return an empty list. Never assign a guest.
 - country: "USA" or "Canada". For guest and Quo conversations use the country in the conversation header. For Slack, use the property, city, or channel; if you can't tell, return "Unknown".
 - property_ids: the Properties Master ids (from the property lists) of the properties the task is about, in the same country as the task. Match street names, nicknames and unit numbers loosely ("Sarnia" = "600 Sarnia Rd"). For guest conversations it is the reservation's property. Empty list if no property is involved (e.g. office or admin work).
+- category: the one that fits best:
+  - "Maintenance": repairs, broken or missing fixtures and appliances, heat, plumbing, power, internet, pest control, contractors, garbage and bins.
+  - "Cleaning": cleanings, turnovers, cleaners' schedules, laundry, restocking supplies and toiletries.
+  - "Guest": replies to guests, check-in/check-out arrangements, early check-in or late checkout, lockouts and access, lost items, parking for guests, guest requests.
+  - "Claims": damage claims, AirCover, security deposits, charging guests for damages.
+  - "Payments & Bills": refunds, payment requests, invoices, utility bills, payouts, costs and reimbursements.
+  - "Owners": owner communication, owner reports, management agreements.
+  - "Listings & Licensing": listings on Airbnb/VRBO/Furnished Finder, pricing, calendar blocks, licences, permits, inspections.
+  - "Admin & Hiring": internal admin, documents, reports, tools and accounts, hiring and staff.
 - deadline: always a date, YYYY-MM-DD, never empty. If the conversation gives a date or relative day ("tomorrow", "by Friday"), use it, resolved against the message date. Otherwise set it from how urgent the task is and what kind of task it is, counting from today:
   - Today: anything affecting a guest who is staying now (no heat, no hot water, leak, lockout, broken appliance, missing essentials), safety issues, and anything that must happen before a check-in later today.
   - Before the next check-in: cleaning, restocking, repairs or setup needed before an arriving guest; use the day before check-in (or today if check-in is tomorrow).
@@ -168,6 +177,11 @@ You are also given the open tasks on the boards, each with its id, the conversat
 - item_id: the open task's id, exactly as listed. source_message: the id of the [NEW] message this is based on.
 Only use evidence from [NEW] messages; never mark a task done because it is old, or from a guess. If it is unclear whether a task is finished, use "note" or leave it out. A message can both resolve an open task and create a new task. If nothing changed for any open task, return an empty list."""
 
+# Labels of the Task Hub's Category column
+CATEGORIES = ["Maintenance", "Cleaning", "Guest", "Claims", "Payments & Bills", "Owners", "Listings & Licensing",
+              "Admin & Hiring"]
+CATEGORY_COLUMN = "Category"
+
 OUTPUT_SCHEMA = {
     "type": "object",
     "properties": {
@@ -181,12 +195,13 @@ OUTPUT_SCHEMA = {
                     "assignee_ids": {"type": "array", "items": {"type": "integer"}},
                     "country": {"type": "string", "enum": ["USA", "Canada", "Unknown"]},
                     "property_ids": {"type": "array", "items": {"type": "integer"}},
+                    "category": {"type": "string", "enum": CATEGORIES},
                     "deadline": {"type": "string"},
                     "source": {"type": "string", "enum": ["slack", "hospitable", "quo"]},
                     "source_conversation": {"type": "string"},
                     "source_message": {"type": "string"},
                 },
-                "required": ["title", "details", "assignee_ids", "country", "property_ids", "deadline",
+                "required": ["title", "details", "assignee_ids", "country", "property_ids", "category", "deadline",
                              "source", "source_conversation", "source_message"],
                 "additionalProperties": False,
             },
@@ -707,6 +722,8 @@ def column_values(task, cols, valid_user_ids, notes, property_ids=(), country=No
     }
     if country and COUNTRY_COLUMN in cols:
         vals[cols[COUNTRY_COLUMN]] = {"label": country}
+    if task.get("category") in CATEGORIES and CATEGORY_COLUMN in cols:
+        vals[cols[CATEGORY_COLUMN]] = {"label": task["category"]}
     if property_ids and "Property Link" in cols:
         vals[cols["Property Link"]] = {"item_ids": list(property_ids)}
     people = [i for i in dict.fromkeys(task["assignee_ids"]) if i in valid_user_ids]
@@ -955,7 +972,7 @@ def main():
         prop_names = {r["id"]: r["name"] for r in catalog.get(country) or []}
         where = ", ".join(prop_names[i] for i in prop_ids) or "no property"
         who = ", ".join(names.get(i, str(i)) for i in task["assignee_ids"] if i in valid_ids) or "unassigned"
-        label = f"[{country}] {task['title']} @ {where} -> {who} (due {task['deadline']})"
+        label = f"[{country}] [{task.get('category', '?')}] {task['title']} @ {where} -> {who} (due {task['deadline']})"
         if DRY_RUN:
             log(f"~ {label}\n    {task['details']}")
             report.append(f"WOULD ADD {label}")

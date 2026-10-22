@@ -272,6 +272,11 @@ class MondayValueTests(unittest.TestCase):
         self.assertEqual(s.column_values(task(), cols, {11}, "n", country="USA")["country"], {"label": "USA"})
         self.assertNotIn("country", s.column_values(task(), cols, {11}, "n"))
 
+    def test_category_is_set(self):
+        cols = {**COLS, "Category": "cat"}
+        self.assertEqual(s.column_values(task(category="Guest"), cols, {11}, "n")["cat"], {"label": "Guest"})
+        self.assertNotIn("cat", s.column_values(task(category="Other"), cols, {11}, "n"))
+
     def test_no_person_or_bad_deadline(self):
         vals = s.column_values(task(assignee_ids=[], deadline="Friday"), COLS, {11}, "n")
         self.assertNotIn("person", vals)
