@@ -29,6 +29,10 @@ A request for an early check-in or a late checkout only shows up the day before 
 
 Every run (every 5 minutes) moves the requests whose day has come into **Overdue & Due Today**, so they appear just after midnight Toronto time on the day before. A request for tomorrow or today goes straight on the board. Claude can still close or update a waiting request, but only once the guest has a definite yes or no (or withdrew the request). A reply that puts it off, like "please check back the day before", leaves the task open.
 
+### Tasks for the same property stay together
+
+In every open group, tasks for the same property sit next to each other. A new task goes right after the group's other tasks for its property, and each run moves back any that got split up, for example by the automation that moves tasks to Overdue & Due Today. Tasks with no property, and the Completed task, Daily Checklist and Weekly Tasks groups, are left where they are.
+
 ### Who does what
 
 Some kinds of work always go to the same person, whoever was asked:

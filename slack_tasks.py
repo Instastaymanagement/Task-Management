@@ -650,9 +650,9 @@ def board_layout(board_id):
 
 def board_items(board_id, column_ids):
     query = """query($id:[ID!], $cols:[String!]){boards(ids:$id){items_page(limit:500){cursor
-        items{id name group{title} column_values(ids:$cols){id text}}}}}"""
+        items{id name group{id title} column_values(ids:$cols){id text ... on BoardRelationValue{linked_item_ids}}}}}}"""
     next_query = """query($cursor:String!, $cols:[String!]){next_items_page(limit:500, cursor:$cursor){cursor
-        items{id name group{title} column_values(ids:$cols){id text}}}}"""
+        items{id name group{id title} column_values(ids:$cols){id text ... on BoardRelationValue{linked_item_ids}}}}}"""
     page = monday(query, {"id": [board_id], "cols": column_ids})["boards"][0]["items_page"]
     items = list(page["items"])
     while page.get("cursor"):
@@ -666,9 +666,10 @@ def load_board():
     for title in ("Person", "Status", "Deadline", "Notes/Updates", COUNTRY_COLUMN):
         if title not in cols:
             raise RuntimeError(f"{HUB['name']} board has no '{title}' column")
+    link_col = cols.get("Property Link")
     items = board_items(HUB["tasks_board"], [cols["Person"], cols["Status"], cols["Notes/Updates"], cols["Deadline"],
-                                             cols[COUNTRY_COLUMN]])
-    keys, open_tasks, updatable = set(), [], {}
+                                             cols[COUNTRY_COLUMN]] + ([link_col] if link_col else []))
+    keys, open_tasks, updatable, order = set(), [], {}, {}
     # Archived tasks still block their source message from creating a task again.
     for it in board_items(HUB["archive_board"], [cols["Notes/Updates"]]):
         keys.update(SOURCE_KEY_RE.findall(" ".join(c["text"] or "" for c in it["column_values"])))
@@ -679,6 +680,9 @@ def load_board():
         keys.update(item_keys)
         group = (it.get("group") or {}).get("title")
         country = vals.get(cols[COUNTRY_COLUMN]) or "Unknown"
+        if group not in RECURRING_GROUPS and group != DONE_GROUP:
+            linked = next((c.get("linked_item_ids") for c in it["column_values"] if c["id"] == link_col), None) or []
+            order.setdefault(it["group"]["id"], []).append((it["id"], str(linked[0]) if linked else None))
         if group == DONE_GROUP or vals.get(cols["Status"]) == DONE_STATUS:
             continue
         # Only one-off tasks are closed automatically; the daily and weekly checklists recur.
@@ -696,7 +700,50 @@ def load_board():
     return {"board_id": HUB["tasks_board"], "cols": cols,
             "group_id": groups.get(TASK_GROUP), "done_group_id": groups.get(DONE_GROUP),
             "upcoming_group_id": groups.get(UPCOMING_GROUP), "maintenance_group_id": groups.get(MAINTENANCE_GROUP),
-            "keys": keys, "open_tasks": open_tasks, "updatable": updatable}
+            "keys": keys, "open_tasks": open_tasks, "updatable": updatable, "order": order}
+
+
+def regroup_moves(order):
+    """Moves (item, after item) that put a group's tasks for the same property next to each other.
+    order is the group's [(item id, property id or None)] in board order; it's updated in place."""
+    moves, placed = [], []
+    for item, prop in order:
+        last = max((i for i, (_, p) in enumerate(placed) if prop and p == prop), default=None)
+        if last is not None and last != len(placed) - 1:
+            moves.append((item, placed[last][0]))
+            placed.insert(last + 1, (item, prop))
+        else:
+            placed.append((item, prop))
+    order[:] = placed
+    return moves
+
+
+def regroup_by_property(board):
+    """Keep tasks for the same property together in every one-off group (automations that move
+    tasks between groups can split them up)."""
+    moved = 0
+    for group_order in board["order"].values():
+        for item, after in regroup_moves(group_order):
+            if not DRY_RUN:
+                monday("""mutation($item:ID!, $after:ID!){change_item_position(item_id:$item, relative_to:$after,
+                    position_relative_method:after_at){id}}""", {"item": item, "after": after})
+            moved += 1
+    return moved
+
+
+def place_after(board, group_id, property_ids):
+    """The item a new task for these properties should go right after: the last one in its group for
+    the same property. None if the group has none."""
+    props = {str(p) for p in property_ids}
+    group_order = board["order"].get(group_id) or []
+    return next((item for item, prop in reversed(group_order) if prop in props), None)
+
+
+def remember_position(board, group_id, item_id, property_ids, after):
+    group_order = board["order"].setdefault(group_id, [])
+    entry = (str(item_id), str(property_ids[0]) if property_ids else None)
+    idx = next((i for i, (item, _) in enumerate(group_order) if item == after), None)
+    group_order.insert(idx + 1 if idx is not None else 0, entry)
 
 
 def property_catalog(country):
@@ -820,12 +867,22 @@ def build_notes(task, source_line):
 
 
 def create_item(board, task, valid_user_ids, source_line, property_ids=(), country=None, group_id=None):
+    """Create the task, right after the group's other tasks for the same property if it has any."""
     vals = column_values(task, board["cols"], valid_user_ids, build_notes(task, source_line), property_ids, country)
-    data = monday("""mutation($board:ID!, $group:String, $name:String!, $vals:JSON!){
-        create_item(board_id:$board, group_id:$group, item_name:$name, column_values:$vals){id}}""",
-                  {"board": board["board_id"], "group": group_id or board["group_id"], "name": task["title"][:255],
-                   "vals": json.dumps(vals)})
-    return data["create_item"]["id"]
+    group_id = group_id or board["group_id"]
+    after = place_after(board, group_id, property_ids) if property_ids else None
+    variables = {"board": board["board_id"], "group": group_id, "name": task["title"][:255], "vals": json.dumps(vals)}
+    if after:
+        data = monday("""mutation($board:ID!, $group:String, $name:String!, $vals:JSON!, $after:ID!){
+            create_item(board_id:$board, group_id:$group, item_name:$name, column_values:$vals,
+                        relative_to:$after, position_relative_method:after_at){id}}""", {**variables, "after": after})
+    else:
+        data = monday("""mutation($board:ID!, $group:String, $name:String!, $vals:JSON!){
+            create_item(board_id:$board, group_id:$group, item_name:$name, column_values:$vals){id}}""", variables)
+    item_id = data["create_item"]["id"]
+    if property_ids:  # so a second task for this property in the same run lands next to it
+        remember_position(board, group_id, item_id, list(property_ids), after)
+    return item_id
 
 
 def apply_task_update(board, item_id, action, comment, deadline):
@@ -1027,6 +1084,10 @@ def main():
     catalog = {c: property_catalog(c) for c in WORKSPACES}
     today = local_today(now)
     open_tasks, updatable = board["open_tasks"], board["updatable"]
+
+    regrouped = regroup_by_property(board)
+    if regrouped:
+        log(f"{'Would move' if DRY_RUN else 'Moved'} {regrouped} task(s) next to others for the same property")
 
     workspace_id = os.environ.get("ANTHROPIC_WORKSPACE_ID", "").strip()
     client = anthropic.Anthropic(

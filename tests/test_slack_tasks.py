@@ -209,18 +209,19 @@ class TaskUpdateTests(unittest.TestCase):
 
     def test_load_board_lists_only_open_one_off_tasks(self):
         items = [
-            {"id": "1", "name": "Reply to Heather", "group": {"title": "Other task"},
+            {"id": "1", "name": "Reply to Heather", "group": {"id": "g_other", "title": "Other task"},
              "column_values": [{"id": "status", "text": "Not done"}, {"id": "person", "text": "Anna"},
+                               {"id": "link", "text": None, "linked_item_ids": ["900"]},
                                {"id": "date_mm7ytd1z", "text": "2026-10-16"}, {"id": "country", "text": "USA"},
                                {"id": "text_mm7xv1hm", "text": "Ask about parking\n[hospitable R1 55]"}]},
-            {"id": "2", "name": "Daily check", "group": {"title": "Daily Checklist"},
+            {"id": "2", "name": "Daily check", "group": {"id": "topics", "title": "Daily Checklist"},
              "column_values": [{"id": "status", "text": ""}, {"id": "text_mm7xv1hm", "text": ""},
                                {"id": "country", "text": "Both"}]},
-            {"id": "3", "name": "Old", "group": {"title": "Completed task"},
+            {"id": "3", "name": "Old", "group": {"id": "g_done", "title": "Completed task"},
              "column_values": [{"id": "status", "text": "Done"}, {"id": "text_mm7xv1hm", "text": "[slack C1 1.2]"}]},
         ]
         layout = ({"Person": "person", "Status": "status", "Deadline": "date_mm7ytd1z", "Notes/Updates": "text_mm7xv1hm",
-                   "Country": "country"},
+                   "Country": "country", "Property Link": "link"},
                   {"Other task": "g_other", "Completed task": "g_done"})
         with mock.patch.object(s, "board_layout", return_value=layout), mock.patch.object(s, "board_items", return_value=items):
             board = s.load_board()
@@ -235,6 +236,7 @@ class TaskUpdateTests(unittest.TestCase):
         self.assertEqual(len(board["open_tasks"]), 1)  # checklist only; one-off tasks are listed once, as updatable
         self.assertEqual(board["keys"], {("hospitable", "R1", "55"), ("slack", "C1", "1.2")})
         self.assertEqual(board["done_group_id"], "g_done")
+        self.assertEqual(board["order"], {"g_other": [("1", "900")]})  # one-off groups only
 
 
 class CandidateFilterTests(unittest.TestCase):
@@ -352,6 +354,32 @@ class StayRequestTests(unittest.TestCase):
             released = s.release_upcoming(self.TODAY)
         self.assertEqual(released, ["Early check-in A", "Overdue C"])
         self.assertEqual(moves, [("1", "g_due"), ("3", "g_due")])
+
+
+class PropertyOrderTests(unittest.TestCase):
+    def test_regroup_moves_split_tasks_together(self):
+        order = [("1", "A"), ("2", "B"), ("3", "A"), ("4", None), ("5", "B"), ("6", "A")]
+        self.assertEqual(s.regroup_moves(order), [("3", "1"), ("5", "2"), ("6", "3")])
+        self.assertEqual(order, [("1", "A"), ("3", "A"), ("6", "A"), ("2", "B"), ("5", "B"), ("4", None)])
+        self.assertEqual(s.regroup_moves(order), [])
+
+    def test_regroup_leaves_tasks_without_property(self):
+        self.assertEqual(s.regroup_moves([("1", None), ("2", "A"), ("3", None), ("4", None)]), [])
+
+    def test_new_task_goes_after_same_property(self):
+        board = {"board_id": 1, "group_id": "g_other", "cols": dict(COLS),
+                 "order": {"g_other": [("10", "100"), ("11", "100"), ("12", "200")]}}
+        calls = []
+
+        def fake(q, v=None):
+            calls.append((q, v))
+            return {"create_item": {"id": "99"}}
+        with mock.patch.object(s, "monday", side_effect=fake):
+            s.create_item(board, task(), {11}, "", property_ids=[100])
+            s.create_item(board, task(), {11}, "", property_ids=[100])
+            s.create_item(board, task(), {11}, "", property_ids=[300])
+        self.assertEqual([v.get("after") for _, v in calls], ["11", "99", None])
+        self.assertNotIn("relative_to", calls[2][0])
 
 
 class TeamListTests(unittest.TestCase):
