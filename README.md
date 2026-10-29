@@ -27,7 +27,7 @@ Each new item goes in the **Other task** group with:
 
 A request for an early check-in or a late checkout only shows up the day before that check-in or checkout. Until then it waits in the **Upcoming Check-in/out Requests** group at the bottom of the Task Hub, with its deadline set to the day before. Claude reads the check-in or checkout date from the conversation.
 
-Every run (every 5 minutes) moves the requests whose day has come into **Overdue & Due Today**, so they appear just after midnight Toronto time on the day before. A request for tomorrow or today goes straight on the board. Claude can still close or update a waiting request if the conversation shows it was handled.
+Every run (every 5 minutes) moves the requests whose day has come into **Overdue & Due Today**, so they appear just after midnight Toronto time on the day before. A request for tomorrow or today goes straight on the board. Claude can still close or update a waiting request, but only once the guest has a definite yes or no (or withdrew the request). A reply that puts it off, like "please check back the day before", leaves the task open.
 
 ### Who does what
 
