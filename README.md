@@ -7,7 +7,7 @@ Every **5 minutes**, this workflow reads new Slack messages and guest conversati
    - **Quo:** new text messages on the London (Canada) and Boston (USA) Quo numbers. Calls aren't read, and the "Primary" number isn't linked. Tasks from the London number are marked Canada, tasks from the Boston number USA (set in `QUO_NUMBERS` in the workflow).
    - **Hospitable:** new messages in every guest conversation (reservations from 6 months ago to a year ahead). Templated automated messages are left out, and so are host replies that only say thanks or "I'll get back to you" (see below).
 2. **Find:** Claude reads the conversation and picks out real tasks (things someone was asked to do, agreed to do, or clearly needs to do). It skips chit-chat, FYIs, work that's already done, and tasks already open on the boards. For each task it decides:
-   - **who** should do it (whoever was asked, @-tagged, or said "I'll do it"),
+   - **who** should do it (whoever was asked, @-tagged, or said "I'll do it"), following the rules in [Who does what](#who-does-what),
    - **USA or Canada**, from the property, city, or channel (it's given both Properties Master lists). Guest conversations always go to the country of the reservation's property.
    - a **deadline**, if one was mentioned ("by Friday", "tomorrow").
 3. **Add:** creates the task on the **Task Hub** board (Instastay Automated → 📋 Task Hub, `18436688444`), which holds the tasks of both countries. Its **Country** column says which one a task is for (USA, Canada, or Both for the shared Daily Checklist), and its 🇺🇸 USA / 🇨🇦 Canada views filter on it.
@@ -22,6 +22,22 @@ Each new item goes in the **Other task** group with:
 - **Property Link:** the property the task is about, linked to its row in that country's Properties Master (the column connects to both). Guest tasks link through the property's Hospitable ID; for Slack and Quo, Claude picks the property from the Properties Master list.
 - **Deadline:** always set. A date given in the conversation is used as is. Otherwise Claude sets one from urgency: today for problems affecting a staying guest or safety; the day before the next check-in for turnover work; 1–2 days for replies, laundry, deliveries and payments; 3–7 days for routine maintenance and purchases; up to 2 weeks for admin and licensing.
 - **Notes/Updates:** the details, where it came from (a link to the Slack message, or the guest, property and reservation code), and a `[slack …]` or `[hospitable …]` key. The key stops the same message from ever creating a second item.
+
+### Who does what
+
+Some kinds of work always go to the same person, whoever was asked:
+
+| Work | Person |
+|---|---|
+| Claims against Airbnb guests (damage, AirCover, deposits) | Anna |
+| Warranty claims | Ivy |
+| Accounting (bookkeeping, invoices, bills, reconciliations, payouts) | Ivy |
+| Cleaning schedules | Anna |
+| Customer support (Category **Guest**) | Split evenly between Anna and Ivy |
+
+Customer support is split by conversation, so the same guest always gets the same person and about half of the guests go to each.
+
+**Days off:** Anna is off Monday and Tuesday, and Ivy does all her work. Ivy is off Saturday and Sunday, and Anna does all her work. This goes by the day the task is created (Toronto time), and overrides everything above, including someone being @-tagged. Change `DAYS_OFF` and `SUPPORT_TEAM` in `slack_tasks.py` to change it. People are matched to monday users by first name.
 
 ### Closing and updating tasks
 

@@ -297,6 +297,30 @@ class MondayValueTests(unittest.TestCase):
                          "https://insta.slack.com/archives/C1/p1760000000000100")
 
 
+class CoverageTests(unittest.TestCase):
+    USERS = [{"id": 1, "name": "Anna Smith"}, {"id": 2, "name": "Ivy"}, {"id": 3, "name": "Waleed"}]
+    MON, WED, SAT = s.dt.date(2026, 11, 2), s.dt.date(2026, 11, 4), s.dt.date(2026, 10, 31)
+
+    def test_days_off_are_covered(self):
+        self.assertEqual(s.assign_coverage(task(assignee_ids=[1, 3]), self.USERS, self.MON), [2, 3])
+        self.assertEqual(s.assign_coverage(task(assignee_ids=[1, 2]), self.USERS, self.MON), [2])
+        self.assertEqual(s.assign_coverage(task(assignee_ids=[2]), self.USERS, self.SAT), [1])
+        self.assertEqual(s.assign_coverage(task(assignee_ids=[1]), self.USERS, self.WED), [1])
+
+    def test_support_is_split_and_stable(self):
+        picks = {s.assign_coverage(task(category="Guest", assignee_ids=[3], source_conversation=f"c{i}"),
+                                   self.USERS, self.WED)[0] for i in range(20)}
+        self.assertEqual(picks, {1, 2})
+        one = task(category="Guest", source_conversation="c7")
+        self.assertEqual(s.assign_coverage(one, self.USERS, self.WED), s.assign_coverage(one, self.USERS, self.WED))
+
+    def test_support_follows_days_off(self):
+        for i in range(10):
+            t = task(category="Guest", source_conversation=f"c{i}")
+            self.assertEqual(s.assign_coverage(t, self.USERS, self.MON), [2])
+            self.assertEqual(s.assign_coverage(t, self.USERS, self.SAT), [1])
+
+
 class TeamListTests(unittest.TestCase):
     def test_matches_slack_names_by_email(self):
         team = s.team_list([{"id": 11, "name": "Falis", "email": "falis@x.com"},
