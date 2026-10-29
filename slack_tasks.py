@@ -47,6 +47,7 @@ import re
 import sys
 import time
 import urllib.error
+import zlib
 import urllib.parse
 import urllib.request
 from zoneinfo import ZoneInfo
@@ -88,6 +89,12 @@ CONTEXT_MESSAGES = 15      # earlier messages per channel shown to Claude for co
 GUEST_CONTEXT_MESSAGES = 20  # latest messages per guest conversation shown to Claude
 NOTES_LIMIT = 1900
 NOTE_PREVIEW = 150         # characters of each open task's notes shown to Claude
+
+# Who covers for whom: on these weekdays (Mon=0) the first person is off and the second does all their work
+DAYS_OFF = {"Anna": ({0, 1}, "Ivy"), "Ivy": ({5, 6}, "Anna")}
+# Customer support tasks are split evenly between these people (the same guest stays with the same person)
+SUPPORT_CATEGORY = "Guest"
+SUPPORT_TEAM = ("Anna", "Ivy")
 
 # Hospitable property country code -> workspace
 COUNTRY_CODES = {"US": "USA", "CA": "Canada"}
@@ -145,6 +152,12 @@ Rules:
 - title: a short imperative line (under 80 characters) that names the property when one is mentioned, e.g. "Replace smoke detector battery at 600 Sarnia Rd".
 - details: one to three sentences with what is needed and any specifics from the conversation (amounts, times, guest names, unit numbers). Don't invent anything.
 - assignee_ids: the monday user ids of the people who should do it, chosen from the team list. Use whoever was asked or tagged (@name), or who said they would do it. If nobody can be identified, return an empty list. Never assign a guest.
+  These areas always belong to the same person, whoever was asked:
+  - Claims against Airbnb guests (damage claims, AirCover, security deposits, charging a guest for damage): Anna.
+  - Warranty claims (appliances, fixtures, products under warranty): Ivy.
+  - Accounting (bookkeeping, invoices, bills, reconciliations, payouts, reimbursements, expense records): Ivy.
+  - Cleaning schedules (booking and scheduling cleaners and turnovers): Anna.
+  Customer support (category "Guest") is shared between Anna and Ivy and days off are covered automatically after you answer, so don't try to balance or cover for days off yourself.
 - country: "USA" or "Canada". For guest and Quo conversations use the country in the conversation header. For Slack, use the property, city, or channel; if you can't tell, return "Unknown".
 - property_ids: the Properties Master ids (from the property lists) of the properties the task is about, in the same country as the task. Match street names, nicknames and unit numbers loosely ("Sarnia" = "600 Sarnia Rd"). For guest conversations it is the reservation's property. Empty list if no property is involved (e.g. office or admin work).
 - category: the one that fits best:
@@ -734,6 +747,30 @@ def column_values(task, cols, valid_user_ids, notes, property_ids=(), country=No
     return vals
 
 
+def user_ids_by_first_name(m_users):
+    ids = {}
+    for u in m_users:
+        words = (u["name"] or "").split()
+        if words:
+            ids.setdefault(words[0].lower(), u["id"])
+    return ids
+
+
+def assign_coverage(task, m_users, today):
+    """Split customer support between the support team, then hand work to whoever is on shift today."""
+    ids = user_ids_by_first_name(m_users)
+    people = list(task["assignee_ids"])
+    support = [ids[n.lower()] for n in SUPPORT_TEAM if n.lower() in ids]
+    if task.get("category") == SUPPORT_CATEGORY and support:
+        # crc32, not hash(): it must give the same person for a conversation on every run
+        people = [support[zlib.crc32(task["source_conversation"].encode()) % len(support)]]
+    for name, (days, cover) in DAYS_OFF.items():
+        off, on = ids.get(name.lower()), ids.get(cover.lower())
+        if today.weekday() in days and off in people and on:
+            people = [on if i == off else i for i in people]
+    return list(dict.fromkeys(people))
+
+
 def build_notes(task, source_line):
     key = f"[{task['source']} {task['source_conversation']} {task['source_message']}]"
     tail = f"\n{source_line}\n{key}" if source_line else f"\n{key}"
@@ -968,6 +1005,7 @@ def main():
         country = guest["country"] if guest and guest["country"] in WORKSPACES else task["country"]
         country = country if country in WORKSPACES else DEFAULT_COUNTRY
         task["deadline"] = clean_deadline(task.get("deadline"), today)
+        task["assignee_ids"] = assign_coverage(task, m_users, today)
         prop_ids = task_properties(task, country, catalog, (guest or {}).get("hospitable_property_id"))
         prop_names = {r["id"]: r["name"] for r in catalog.get(country) or []}
         where = ", ".join(prop_names[i] for i in prop_ids) or "no property"
