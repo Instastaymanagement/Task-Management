@@ -78,6 +78,8 @@ DONE_GROUP = "Completed task"
 # then move to the due group (see release_upcoming)
 UPCOMING_GROUP = "Upcoming Check-in/out Requests"
 DUE_GROUP = "Overdue & Due Today"
+# New Maintenance tasks go here instead of TASK_GROUP, so all maintenance requests are listed together
+MAINTENANCE_GROUP = "Property Maintenance"
 DONE_STATUS = "Done"
 PROGRESS_STATUS = "Working on it"
 NEW_STATUS = "Not done"
@@ -693,7 +695,7 @@ def load_board():
             }
     return {"board_id": HUB["tasks_board"], "cols": cols,
             "group_id": groups.get(TASK_GROUP), "done_group_id": groups.get(DONE_GROUP),
-            "upcoming_group_id": groups.get(UPCOMING_GROUP),
+            "upcoming_group_id": groups.get(UPCOMING_GROUP), "maintenance_group_id": groups.get(MAINTENANCE_GROUP),
             "keys": keys, "open_tasks": open_tasks, "updatable": updatable}
 
 
@@ -1053,14 +1055,15 @@ def main():
         task["deadline"] = clean_deadline(task.get("deadline"), today)
         stay_deadline, hold = stay_schedule(task, today)
         task["deadline"] = stay_deadline or task["deadline"]
-        group_id = board["upcoming_group_id"] if hold else None
+        group_id = (board["upcoming_group_id"] if hold
+                    else board["maintenance_group_id"] if task.get("category") == "Maintenance" else None)
         task["assignee_ids"] = assign_coverage(task, m_users, today)
         prop_ids = task_properties(task, country, catalog, (guest or {}).get("hospitable_property_id"))
         prop_names = {r["id"]: r["name"] for r in catalog.get(country) or []}
         where = ", ".join(prop_names[i] for i in prop_ids) or "no property"
         who = ", ".join(names.get(i, str(i)) for i in task["assignee_ids"] if i in valid_ids) or "unassigned"
         label = (f"[{country}] [{task.get('category', '?')}] {task['title']} @ {where} -> {who} (due {task['deadline']})"
-                 + (" [held until the day before]" if group_id else ""))
+                 + (" [held until the day before]" if hold else ""))
         if DRY_RUN:
             log(f"~ {label}\n    {task['details']}")
             report.append(f"WOULD ADD {label}")
