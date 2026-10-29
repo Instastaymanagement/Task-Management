@@ -74,6 +74,10 @@ TASK_GROUP = "Other task"
 # Groups that repeat; their items are never closed or updated automatically
 RECURRING_GROUPS = {"Daily Checklist", "Weekly Tasks"}
 DONE_GROUP = "Completed task"
+# Early check-in / late checkout requests wait here until the day before the stay date,
+# then move to the due group (see release_upcoming)
+UPCOMING_GROUP = "Upcoming Check-in/out Requests"
+DUE_GROUP = "Overdue & Due Today"
 DONE_STATUS = "Done"
 PROGRESS_STATUS = "Working on it"
 NEW_STATUS = "Not done"
@@ -176,6 +180,7 @@ Rules:
   - Within 3-7 days: routine maintenance at empty properties, purchases, scheduling contractors, follow-ups with no time pressure.
   - Within 2 weeks: admin, documents, licensing, listings, improvements.
   Never set a date before today.
+- stay_date: for an early check-in or late checkout request, the date of that check-in or checkout (YYYY-MM-DD); the task is held back and shows up on the board the day before it. Empty string for every other task.
 - source, source_conversation and source_message: copy the source and conversation id from the conversation header, and the id of the [NEW] message the task comes from, exactly as shown.
 
 If there are no tasks, return an empty list.
@@ -210,12 +215,13 @@ OUTPUT_SCHEMA = {
                     "property_ids": {"type": "array", "items": {"type": "integer"}},
                     "category": {"type": "string", "enum": CATEGORIES},
                     "deadline": {"type": "string"},
+                    "stay_date": {"type": "string"},
                     "source": {"type": "string", "enum": ["slack", "hospitable", "quo"]},
                     "source_conversation": {"type": "string"},
                     "source_message": {"type": "string"},
                 },
                 "required": ["title", "details", "assignee_ids", "country", "property_ids", "category", "deadline",
-                             "source", "source_conversation", "source_message"],
+                             "stay_date", "source", "source_conversation", "source_message"],
                 "additionalProperties": False,
             },
         },
@@ -686,6 +692,7 @@ def load_board():
             }
     return {"board_id": HUB["tasks_board"], "cols": cols,
             "group_id": groups.get(TASK_GROUP), "done_group_id": groups.get(DONE_GROUP),
+            "upcoming_group_id": groups.get(UPCOMING_GROUP),
             "keys": keys, "open_tasks": open_tasks, "updatable": updatable}
 
 
@@ -715,6 +722,38 @@ def clean_deadline(value, today):
     except ValueError:
         day = today + dt.timedelta(days=DEFAULT_DEADLINE_DAYS)
     return max(day, today).isoformat()
+
+
+def stay_schedule(task, today):
+    """(deadline, hold) for an early check-in / late checkout request: it's due the day before the
+    stay date, and held in the upcoming group until then. (None, False) for other tasks."""
+    try:
+        stay = dt.date.fromisoformat((task.get("stay_date") or "").strip())
+    except ValueError:
+        return None, False
+    show = stay - dt.timedelta(days=1)
+    return max(show, today).isoformat(), show > today
+
+
+def release_upcoming(today):
+    """Move held check-in/out requests whose day has come (deadline today or earlier) to the due group."""
+    cols, groups = board_layout(HUB["tasks_board"])
+    held, due = groups.get(UPCOMING_GROUP), groups.get(DUE_GROUP) or groups.get(TASK_GROUP)
+    if not held or "Deadline" not in cols:
+        return []
+    data = monday("""query($id:[ID!], $group:[String], $cols:[String!]){boards(ids:$id){groups(ids:$group){
+        items_page(limit:500){items{id name column_values(ids:$cols){text}}}}}}""",
+                  {"id": [HUB["tasks_board"]], "group": [held], "cols": [cols["Deadline"]]})
+    released = []
+    for it in data["boards"][0]["groups"][0]["items_page"]["items"]:
+        deadline = (it["column_values"][0]["text"] if it["column_values"] else "") or ""
+        if deadline[:10] > today.isoformat():
+            continue
+        if not DRY_RUN:
+            monday("mutation($item:ID!, $group:String!){move_item_to_group(item_id:$item, group_id:$group){id}}",
+                   {"item": it["id"], "group": due})
+        released.append(it["name"])
+    return released
 
 
 def task_properties(task, country, catalog, hospitable_property_id=None):
@@ -777,11 +816,11 @@ def build_notes(task, source_line):
     return task["details"].strip()[: NOTES_LIMIT - len(tail)] + tail
 
 
-def create_item(board, task, valid_user_ids, source_line, property_ids=(), country=None):
+def create_item(board, task, valid_user_ids, source_line, property_ids=(), country=None, group_id=None):
     vals = column_values(task, board["cols"], valid_user_ids, build_notes(task, source_line), property_ids, country)
     data = monday("""mutation($board:ID!, $group:String, $name:String!, $vals:JSON!){
         create_item(board_id:$board, group_id:$group, item_name:$name, column_values:$vals){id}}""",
-                  {"board": board["board_id"], "group": board["group_id"], "name": task["title"][:255],
+                  {"board": board["board_id"], "group": group_id or board["group_id"], "name": task["title"][:255],
                    "vals": json.dumps(vals)})
     return data["create_item"]["id"]
 
@@ -967,6 +1006,12 @@ def main():
     else:
         log("QUO_API_KEY not set: Quo texts skipped")
 
+    try:
+        for name in release_upcoming(local_today(now)):
+            log(f"{'~ would show' if DRY_RUN else '> showing'} check-in/out request: {name}")
+    except (RuntimeError, OSError) as e:
+        log(f"! Couldn't release upcoming check-in/out requests: {e}")
+
     if not new_total:
         log("No new messages.")
         if not DRY_RUN:
@@ -1005,12 +1050,16 @@ def main():
         country = guest["country"] if guest and guest["country"] in WORKSPACES else task["country"]
         country = country if country in WORKSPACES else DEFAULT_COUNTRY
         task["deadline"] = clean_deadline(task.get("deadline"), today)
+        stay_deadline, hold = stay_schedule(task, today)
+        task["deadline"] = stay_deadline or task["deadline"]
+        group_id = board["upcoming_group_id"] if hold else None
         task["assignee_ids"] = assign_coverage(task, m_users, today)
         prop_ids = task_properties(task, country, catalog, (guest or {}).get("hospitable_property_id"))
         prop_names = {r["id"]: r["name"] for r in catalog.get(country) or []}
         where = ", ".join(prop_names[i] for i in prop_ids) or "no property"
         who = ", ".join(names.get(i, str(i)) for i in task["assignee_ids"] if i in valid_ids) or "unassigned"
-        label = f"[{country}] [{task.get('category', '?')}] {task['title']} @ {where} -> {who} (due {task['deadline']})"
+        label = (f"[{country}] [{task.get('category', '?')}] {task['title']} @ {where} -> {who} (due {task['deadline']})"
+                 + (" [held until the day before]" if group_id else ""))
         if DRY_RUN:
             log(f"~ {label}\n    {task['details']}")
             report.append(f"WOULD ADD {label}")
@@ -1022,7 +1071,7 @@ def main():
         else:
             link = permalink_for(team_url, task["source_conversation"], task["source_message"])
             source_line = f"Slack: {link}" if link else ""
-        item_id = create_item(board, task, valid_ids, source_line, prop_ids, country)
+        item_id = create_item(board, task, valid_ids, source_line, prop_ids, country, group_id)
         created += 1
         log(f"+ {label} (item {item_id})")
         report.append(f"ADDED {label}")

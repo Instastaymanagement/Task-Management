@@ -321,6 +321,39 @@ class CoverageTests(unittest.TestCase):
             self.assertEqual(s.assign_coverage(t, self.USERS, self.SAT), [1])
 
 
+class StayRequestTests(unittest.TestCase):
+    TODAY = s.dt.date(2026, 10, 29)
+
+    def test_future_request_is_held_until_the_day_before(self):
+        self.assertEqual(s.stay_schedule(task(stay_date="2026-11-03"), self.TODAY), ("2026-11-02", True))
+
+    def test_request_for_tomorrow_shows_now(self):
+        self.assertEqual(s.stay_schedule(task(stay_date="2026-10-30"), self.TODAY), ("2026-10-29", False))
+        self.assertEqual(s.stay_schedule(task(stay_date="2026-10-29"), self.TODAY), ("2026-10-29", False))
+
+    def test_other_tasks_are_untouched(self):
+        self.assertEqual(s.stay_schedule(task(stay_date=""), self.TODAY), (None, False))
+        self.assertEqual(s.stay_schedule(task(), self.TODAY), (None, False))
+
+    def test_release_moves_only_requests_due(self):
+        layout = ({"Deadline": "date"}, {s.UPCOMING_GROUP: "g_up", s.DUE_GROUP: "g_due"})
+        items = [{"id": "1", "name": "Early check-in A", "column_values": [{"text": "2026-10-29"}]},
+                 {"id": "2", "name": "Late checkout B", "column_values": [{"text": "2026-11-02"}]},
+                 {"id": "3", "name": "Overdue C", "column_values": [{"text": "2026-10-27"}]}]
+        moves = []
+
+        def fake(q, v=None):
+            if "move_item_to_group" in q:
+                moves.append((v["item"], v["group"]))
+                return {}
+            return {"boards": [{"groups": [{"items_page": {"items": items}}]}]}
+        with mock.patch.object(s, "board_layout", return_value=layout), mock.patch.object(s, "monday", side_effect=fake), \
+                mock.patch.object(s, "DRY_RUN", False):
+            released = s.release_upcoming(self.TODAY)
+        self.assertEqual(released, ["Early check-in A", "Overdue C"])
+        self.assertEqual(moves, [("1", "g_due"), ("3", "g_due")])
+
+
 class TeamListTests(unittest.TestCase):
     def test_matches_slack_names_by_email(self):
         team = s.team_list([{"id": 11, "name": "Falis", "email": "falis@x.com"},
