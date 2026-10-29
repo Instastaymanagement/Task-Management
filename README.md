@@ -23,6 +23,12 @@ Each new item goes in the **Other task** group with:
 - **Deadline:** always set. A date given in the conversation is used as is. Otherwise Claude sets one from urgency: today for problems affecting a staying guest or safety; the day before the next check-in for turnover work; 1–2 days for replies, laundry, deliveries and payments; 3–7 days for routine maintenance and purchases; up to 2 weeks for admin and licensing.
 - **Notes/Updates:** the details, where it came from (a link to the Slack message, or the guest, property and reservation code), and a `[slack …]` or `[hospitable …]` key. The key stops the same message from ever creating a second item.
 
+### Early check-in and late checkout requests
+
+A request for an early check-in or a late checkout only shows up the day before that check-in or checkout. Until then it waits in the **Upcoming Check-in/out Requests** group at the bottom of the Task Hub, with its deadline set to the day before. Claude reads the check-in or checkout date from the conversation.
+
+Every run (every 5 minutes) moves the requests whose day has come into **Overdue & Due Today**, so they appear just after midnight Toronto time on the day before. A request for tomorrow or today goes straight on the board. Claude can still close or update a waiting request if the conversation shows it was handled.
+
 ### Who does what
 
 Some kinds of work always go to the same person, whoever was asked:
