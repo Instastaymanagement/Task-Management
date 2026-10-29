@@ -193,6 +193,7 @@ You are also given the open tasks on the boards, each with its id, the conversat
 - comment: what a teammate would post on the task in monday: one or two short, plain sentences saying what happened and who did it, in a natural voice. No labels, prefixes, emojis, sign-offs, or mention of automation or AI. E.g. "Ivy sent Heather the street parking rules in Hospitable, so this one's done." or "Waleed's lining up the tech to check the stove; Jeannette is OK with them coming by."
 - new_deadline: YYYY-MM-DD if the conversation sets or moves the date for the work, otherwise an empty string.
 - item_id: the open task's id, exactly as listed. source_message: the id of the [NEW] message this is based on.
+Early check-in and late checkout requests are only "done" once the guest has a definite answer (approved with the time and any fee, or declined) or withdrew the request. A host reply that puts it off ("please check back the day before", "we'll confirm closer to the date", "let me check with the cleaner") does not finish it: use "note", or leave it out.
 Only use evidence from [NEW] messages; never mark a task done because it is old, or from a guess. If it is unclear whether a task is finished, use "note" or leave it out. A message can both resolve an open task and create a new task. If nothing changed for any open task, return an empty list."""
 
 # Labels of the Task Hub's Category column
