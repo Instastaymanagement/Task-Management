@@ -12,7 +12,7 @@ Every **5 minutes**, this workflow reads new Slack messages and guest conversati
    - a **deadline**, if one was mentioned ("by Friday", "tomorrow").
 3. **Add:** creates the task on the **Task Hub** board (Instastay Automated → 📋 Task Hub, `18436688444`), which holds the tasks of both countries. Its **Country** column says which one a task is for (USA, Canada, or Both for the shared Daily Checklist), and its 🇺🇸 USA / 🇨🇦 Canada views filter on it.
 
-Each new item goes in the **Other task** group (Maintenance tasks go in **Property Maintenance**, so every maintenance request is listed in one place) with:
+Each new item goes in the **Other task** group (Maintenance tasks go in **Property Maintenance** and Claims tasks, warranty claims included, in **Claims**, so each kind is listed in one place) with:
 
 - **Name:** a short description of the task.
 - **Country:** USA or Canada.
