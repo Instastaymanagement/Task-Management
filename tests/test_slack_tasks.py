@@ -222,7 +222,7 @@ class TaskUpdateTests(unittest.TestCase):
         ]
         layout = ({"Person": "person", "Status": "status", "Deadline": "date_mm7ytd1z", "Notes/Updates": "text_mm7xv1hm",
                    "Country": "country", "Property Link": "link"},
-                  {"Other task": "g_other", "Completed task": "g_done"})
+                  {"Other task": "g_other", "Completed task": "g_done", "Claims": "g_claims"})
         with mock.patch.object(s, "board_layout", return_value=layout), mock.patch.object(s, "board_items", return_value=items):
             board = s.load_board()
         self.assertEqual(list(board["updatable"]), [1])
@@ -237,6 +237,7 @@ class TaskUpdateTests(unittest.TestCase):
         self.assertEqual(board["keys"], {("hospitable", "R1", "55"), ("slack", "C1", "1.2")})
         self.assertEqual(board["done_group_id"], "g_done")
         self.assertEqual(board["order"], {"g_other": [("1", "900")]})  # one-off groups only
+        self.assertEqual(board["category_group_ids"], {"Claims": "g_claims"})  # no Property Maintenance group here
 
 
 class CandidateFilterTests(unittest.TestCase):

@@ -78,8 +78,8 @@ DONE_GROUP = "Completed task"
 # then move to the due group (see release_upcoming)
 UPCOMING_GROUP = "Upcoming Check-in/out Requests"
 DUE_GROUP = "Overdue & Due Today"
-# New Maintenance tasks go here instead of TASK_GROUP, so all maintenance requests are listed together
-MAINTENANCE_GROUP = "Property Maintenance"
+# New tasks of these categories go in their own group instead of TASK_GROUP, so they're listed together
+CATEGORY_GROUPS = {"Maintenance": "Property Maintenance", "Claims": "Claims"}
 DONE_STATUS = "Done"
 PROGRESS_STATUS = "Working on it"
 NEW_STATUS = "Not done"
@@ -170,7 +170,7 @@ Rules:
   - "Maintenance": repairs, broken or missing fixtures and appliances, heat, plumbing, power, internet, pest control, contractors, garbage and bins.
   - "Cleaning": cleanings, turnovers, cleaners' schedules, laundry, restocking supplies and toiletries.
   - "Guest": replies to guests, check-in/check-out arrangements, early check-in or late checkout, lockouts and access, lost items, parking for guests, guest requests.
-  - "Claims": damage claims, AirCover, security deposits, charging guests for damages.
+  - "Claims": damage claims, AirCover, security deposits, charging guests for damages, warranty claims (even when they're about a broken lock or appliance).
   - "Payments & Bills": refunds, payment requests, invoices, utility bills, payouts, costs and reimbursements.
   - "Owners": owner communication, owner reports, management agreements.
   - "Listings & Licensing": listings on Airbnb/VRBO/Furnished Finder, pricing, calendar blocks, licences, permits, inspections.
@@ -699,7 +699,8 @@ def load_board():
             }
     return {"board_id": HUB["tasks_board"], "cols": cols,
             "group_id": groups.get(TASK_GROUP), "done_group_id": groups.get(DONE_GROUP),
-            "upcoming_group_id": groups.get(UPCOMING_GROUP), "maintenance_group_id": groups.get(MAINTENANCE_GROUP),
+            "upcoming_group_id": groups.get(UPCOMING_GROUP),
+            "category_group_ids": {c: groups[g] for c, g in CATEGORY_GROUPS.items() if g in groups},
             "keys": keys, "open_tasks": open_tasks, "updatable": updatable, "order": order}
 
 
@@ -1117,7 +1118,7 @@ def main():
         stay_deadline, hold = stay_schedule(task, today)
         task["deadline"] = stay_deadline or task["deadline"]
         group_id = (board["upcoming_group_id"] if hold
-                    else board["maintenance_group_id"] if task.get("category") == "Maintenance" else None)
+                    else board["category_group_ids"].get(task.get("category")))
         task["assignee_ids"] = assign_coverage(task, m_users, today)
         prop_ids = task_properties(task, country, catalog, (guest or {}).get("hospitable_property_id"))
         prop_names = {r["id"]: r["name"] for r in catalog.get(country) or []}
