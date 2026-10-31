@@ -35,7 +35,7 @@ def relation_ids(item, column_id):
 
 def finished_items(board_id, status_col, relation_col, country_col=""):
     """Items to archive, with the properties they link to and their country."""
-    fields = f"""id name group{{title}} column_values(ids:["{status_col}", "{relation_col}", "{country_col}"]){{
+    fields = f"""id name group{{id}} column_values(ids:["{status_col}", "{relation_col}", "{country_col}"]){{
         id text ... on BoardRelationValue {{linked_item_ids}}}}"""
     page = monday(f"query($id:[ID!]){{boards(ids:$id){{items_page(limit:500){{cursor items{{{fields}}}}}}}}}",
                   {"id": [board_id]})["boards"][0]["items_page"]
@@ -46,7 +46,7 @@ def finished_items(board_id, status_col, relation_col, country_col=""):
         items.extend(page["items"])
     out = []
     for it in items:
-        group = (it.get("group") or {}).get("title")
+        group = (it.get("group") or {}).get("id")
         status = next((c["text"] for c in it["column_values"] if c["id"] == status_col), "")
         country = next((c["text"] for c in it["column_values"] if c["id"] == country_col), "") or "?"
         if group in RECURRING_GROUPS:
@@ -60,9 +60,9 @@ def finished_items(board_id, status_col, relation_col, country_col=""):
 def archive(dry_run):
     cols, _ = board_layout(HUB["tasks_board"])
     _, archive_groups = board_layout(HUB["archive_board"])
-    group_id = archive_groups.get(DONE_GROUP)
-    if not group_id:
-        raise RuntimeError(f"{HUB['name']} archive board has no '{DONE_GROUP}' group")
+    group_id = DONE_GROUP
+    if group_id not in archive_groups.values():
+        raise RuntimeError(f"{HUB['name']} archive board has no group {DONE_GROUP} (Completed task)")
     relation_col = cols.get("Property Link", "")
     items = finished_items(HUB["tasks_board"], cols["Status"], relation_col, cols.get(COUNTRY_COLUMN, ""))
     report = []
