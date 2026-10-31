@@ -183,7 +183,7 @@ class TaskUpdateTests(unittest.TestCase):
 
     def run_update(self, action, deadline=""):
         calls = []
-        with mock.patch.object(s, "monday", side_effect=lambda q, v=None: calls.append((q, v)) or {}):
+        with mock.patch.object(s, "monday", side_effect=lambda q, v=None, **_: calls.append((q, v)) or {}):
             s.apply_task_update(self.board, 42, action, "Ivy sent the parking rules.", deadline)
         return calls
 
@@ -346,7 +346,7 @@ class StayRequestTests(unittest.TestCase):
                  {"id": "3", "name": "Overdue C", "column_values": [{"text": "2026-10-27"}]}]
         moves = []
 
-        def fake(q, v=None):
+        def fake(q, v=None, **_):
             if "move_item_to_group" in q:
                 moves.append((v["item"], v["group"]))
                 return {}
@@ -384,7 +384,7 @@ class PropertyOrderTests(unittest.TestCase):
                  "order": {"g_other": [("10", "100"), ("11", "100"), ("12", "200")]}}
         calls = []
 
-        def fake(q, v=None):
+        def fake(q, v=None, **_):
             calls.append((q, v))
             return {"create_item": {"id": "99"}}
         with mock.patch.object(s, "monday", side_effect=fake):
