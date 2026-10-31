@@ -209,7 +209,7 @@ class TaskUpdateTests(unittest.TestCase):
 
     def test_load_board_lists_only_open_one_off_tasks(self):
         items = [
-            {"id": "1", "name": "Reply to Heather", "group": {"id": "g_other", "title": "Other task"},
+            {"id": "1", "name": "Reply to Heather", "group": {"id": s.TASK_GROUP, "title": "Active task"},
              "column_values": [{"id": "status", "text": "Not done"}, {"id": "person", "text": "Anna"},
                                {"id": "link", "text": None, "linked_item_ids": ["900"]},
                                {"id": "date_mm7ytd1z", "text": "2026-10-16"}, {"id": "country", "text": "USA"},
@@ -217,12 +217,12 @@ class TaskUpdateTests(unittest.TestCase):
             {"id": "2", "name": "Daily check", "group": {"id": "topics", "title": "Daily Checklist"},
              "column_values": [{"id": "status", "text": ""}, {"id": "text_mm7xv1hm", "text": ""},
                                {"id": "country", "text": "Both"}]},
-            {"id": "3", "name": "Old", "group": {"id": "g_done", "title": "Completed task"},
+            {"id": "3", "name": "Old", "group": {"id": s.DONE_GROUP, "title": "Completed task"},
              "column_values": [{"id": "status", "text": "Done"}, {"id": "text_mm7xv1hm", "text": "[slack C1 1.2]"}]},
         ]
         layout = ({"Person": "person", "Status": "status", "Deadline": "date_mm7ytd1z", "Notes/Updates": "text_mm7xv1hm",
                    "Country": "country", "Property Link": "link"},
-                  {"Other task": "g_other", "Completed task": "g_done", "Claims": "g_claims"})
+                  {"Active task": s.TASK_GROUP, "Completed task": s.DONE_GROUP, "Claims": "group_mm8m6aaz"})
         with mock.patch.object(s, "board_layout", return_value=layout), mock.patch.object(s, "board_items", return_value=items):
             board = s.load_board()
         self.assertEqual(list(board["updatable"]), [1])
@@ -235,9 +235,10 @@ class TaskUpdateTests(unittest.TestCase):
         self.assertEqual(board["board_id"], s.HUB["tasks_board"])
         self.assertEqual(len(board["open_tasks"]), 1)  # checklist only; one-off tasks are listed once, as updatable
         self.assertEqual(board["keys"], {("hospitable", "R1", "55"), ("slack", "C1", "1.2")})
-        self.assertEqual(board["done_group_id"], "g_done")
-        self.assertEqual(board["order"], {"g_other": [("1", "900")]})  # one-off groups only
-        self.assertEqual(board["category_group_ids"], {"Claims": "g_claims"})  # no Property Maintenance group here
+        self.assertEqual(board["group_id"], s.TASK_GROUP)
+        self.assertEqual(board["done_group_id"], s.DONE_GROUP)
+        self.assertEqual(board["order"], {s.TASK_GROUP: [("1", "900")]})  # one-off groups only
+        self.assertEqual(board["category_group_ids"], {"Claims": "group_mm8m6aaz"})  # no Property Maintenance group here
 
 
 class CandidateFilterTests(unittest.TestCase):
@@ -339,7 +340,7 @@ class StayRequestTests(unittest.TestCase):
         self.assertEqual(s.stay_schedule(task(), self.TODAY), (None, False))
 
     def test_release_moves_only_requests_due(self):
-        layout = ({"Deadline": "date"}, {s.UPCOMING_GROUP: "g_up", s.DUE_GROUP: "g_due"})
+        layout = ({"Deadline": "date"}, {"Upcoming": s.UPCOMING_GROUP, "Due": s.DUE_GROUP})
         items = [{"id": "1", "name": "Early check-in A", "column_values": [{"text": "2026-10-29"}]},
                  {"id": "2", "name": "Late checkout B", "column_values": [{"text": "2026-11-02"}]},
                  {"id": "3", "name": "Overdue C", "column_values": [{"text": "2026-10-27"}]}]
@@ -354,7 +355,18 @@ class StayRequestTests(unittest.TestCase):
                 mock.patch.object(s, "DRY_RUN", False):
             released = s.release_upcoming(self.TODAY)
         self.assertEqual(released, ["Early check-in A", "Overdue C"])
-        self.assertEqual(moves, [("1", "g_due"), ("3", "g_due")])
+        self.assertEqual(moves, [("1", s.DUE_GROUP), ("3", s.DUE_GROUP)])
+
+
+class GroupTests(unittest.TestCase):
+    def test_renamed_groups_still_found_but_missing_task_group_stops_the_run(self):
+        cols = {"Person": "p", "Status": "s", "Deadline": "d", "Notes/Updates": "n", "Country": "c"}
+        renamed = (cols, {"Renamed": s.TASK_GROUP})
+        with mock.patch.object(s, "board_layout", return_value=renamed), mock.patch.object(s, "board_items", return_value=[]):
+            self.assertEqual(s.load_board()["group_id"], s.TASK_GROUP)
+        with mock.patch.object(s, "board_layout", return_value=(cols, {"Other": "group_x"})), \
+                mock.patch.object(s, "board_items", return_value=[]), self.assertRaises(RuntimeError):
+            s.load_board()
 
 
 class PropertyOrderTests(unittest.TestCase):
@@ -406,14 +418,14 @@ class ArchiveTests(unittest.TestCase):
     def test_moves_only_finished_one_off_tasks(self):
         import archive_tasks as a
         page = {"boards": [{"items_page": {"cursor": None, "items": [
-            {"id": "1", "name": "Fixed leak", "group": {"title": "Completed task"},
+            {"id": "1", "name": "Fixed leak", "group": {"id": s.DONE_GROUP},
              "column_values": [{"id": "status", "text": "Done"}, {"id": "rel", "text": None, "linked_item_ids": ["77"]},
                                {"id": "country", "text": "Canada"}]},
-            {"id": "2", "name": "Paid vendor", "group": {"title": "Overdue & Due Today"},
+            {"id": "2", "name": "Paid vendor", "group": {"id": s.DUE_GROUP},
              "column_values": [{"id": "status", "text": "Done"}, {"id": "rel", "text": None}]},
-            {"id": "3", "name": "Morning check", "group": {"title": "Daily Checklist"},
+            {"id": "3", "name": "Morning check", "group": {"id": "topics"},
              "column_values": [{"id": "status", "text": "Done"}]},
-            {"id": "4", "name": "Reply to guest", "group": {"title": "Other task"},
+            {"id": "4", "name": "Reply to guest", "group": {"id": s.TASK_GROUP},
              "column_values": [{"id": "status", "text": "Working on it"}]},
         ]}}]}
         with mock.patch.object(a, "monday", return_value=page):

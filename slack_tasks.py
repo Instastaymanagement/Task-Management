@@ -11,10 +11,10 @@
    conversations go to the country of their property, Quo conversations to the
    country of the Quo number).
 3. Creates each task on the "Task Hub" board (Instastay Automated → Task Hub),
-   in the "Other task" group, with its Country set, the person assigned so
+   in the "Active task" group, with its Country set, the person assigned so
    monday notifies them, and the property linked to its row in that country's
    Properties Master.
-4. Checks the open tasks in "Other task" against the same conversations: a task
+4. Checks the open tasks in "Active task" against the same conversations: a task
    the conversation shows was handled is marked Done and moved to "Completed
    task"; progress on one updates its status or deadline. Every change is
    explained in a comment on the item.
@@ -70,16 +70,18 @@ WORKSPACES = {
     "USA": {"properties_board": 18435507823},
     "Canada": {"properties_board": 18435476437},
 }
-TASK_GROUP = "Other task"
+# Task Hub groups, by id: a group keeps its id when someone renames it. The archive board,
+# a copy of the Task Hub, has the same ids.
+TASK_GROUP = "group_mm7yx2bc"       # Active task (was "Other task"): where new tasks go
 # Groups that repeat; their items are never closed or updated automatically
-RECURRING_GROUPS = {"Daily Checklist", "Weekly Tasks"}
-DONE_GROUP = "Completed task"
+RECURRING_GROUPS = {"topics", "group_mm82jy9w"}  # Daily Checklist, Weekly Tasks
+DONE_GROUP = "group_mm7ykbd0"       # Completed task
 # Early check-in / late checkout requests wait here until the day before the stay date,
 # then move to the due group (see release_upcoming)
-UPCOMING_GROUP = "Upcoming Check-in/out Requests"
-DUE_GROUP = "Overdue & Due Today"
+UPCOMING_GROUP = "group_mm8kmnww"   # Upcoming Check-in/out Requests
+DUE_GROUP = "group_mm87wps"         # Overdue & Due Today
 # New tasks of these categories go in their own group instead of TASK_GROUP, so they're listed together
-CATEGORY_GROUPS = {"Maintenance": "Property Maintenance", "Claims": "Claims"}
+CATEGORY_GROUPS = {"Maintenance": "group_mm8kzgy5", "Claims": "group_mm8m6aaz"}  # Property Maintenance, Claims
 DONE_STATUS = "Done"
 PROGRESS_STATUS = "Working on it"
 NEW_STATUS = "Not done"
@@ -666,6 +668,10 @@ def load_board():
     for title in ("Person", "Status", "Deadline", "Notes/Updates", COUNTRY_COLUMN):
         if title not in cols:
             raise RuntimeError(f"{HUB['name']} board has no '{title}' column")
+    group_ids = set(groups.values())
+    if TASK_GROUP not in group_ids:
+        # Without it monday would put new tasks in the top group (the Daily Checklist)
+        raise RuntimeError(f"{HUB['name']} board has no group {TASK_GROUP} for new tasks; update TASK_GROUP")
     link_col = cols.get("Property Link")
     items = board_items(HUB["tasks_board"], [cols["Person"], cols["Status"], cols["Notes/Updates"], cols["Deadline"],
                                              cols[COUNTRY_COLUMN]] + ([link_col] if link_col else []))
@@ -678,15 +684,15 @@ def load_board():
         notes = vals.get(cols["Notes/Updates"], "")
         item_keys = SOURCE_KEY_RE.findall(notes)
         keys.update(item_keys)
-        group = (it.get("group") or {}).get("title")
+        group = (it.get("group") or {}).get("id")
         country = vals.get(cols[COUNTRY_COLUMN]) or "Unknown"
         if group not in RECURRING_GROUPS and group != DONE_GROUP:
             linked = next((c.get("linked_item_ids") for c in it["column_values"] if c["id"] == link_col), None) or []
-            order.setdefault(it["group"]["id"], []).append((it["id"], str(linked[0]) if linked else None))
+            order.setdefault(group, []).append((it["id"], str(linked[0]) if linked else None))
         if group == DONE_GROUP or vals.get(cols["Status"]) == DONE_STATUS:
             continue
         # Only one-off tasks are closed automatically; the daily and weekly checklists recur.
-        # One-off tasks (in "Other task" or any other non-recurring group, such as "Overdue &
+        # One-off tasks (in "Active task" or any other non-recurring group, such as "Overdue &
         # Due Today") are listed once, with their ids, in the updatable list.
         if group in RECURRING_GROUPS:
             open_tasks.append(f"- [{country}] {it['name']} (assigned: {vals.get(cols['Person']) or 'nobody'})")
@@ -698,9 +704,9 @@ def load_board():
                 "from": ", ".join(f"{src} conversation {conv}" for src, conv, _ in item_keys) or "unknown",
             }
     return {"board_id": HUB["tasks_board"], "cols": cols,
-            "group_id": groups.get(TASK_GROUP), "done_group_id": groups.get(DONE_GROUP),
-            "upcoming_group_id": groups.get(UPCOMING_GROUP),
-            "category_group_ids": {c: groups[g] for c, g in CATEGORY_GROUPS.items() if g in groups},
+            "group_id": TASK_GROUP, "done_group_id": DONE_GROUP if DONE_GROUP in group_ids else None,
+            "upcoming_group_id": UPCOMING_GROUP if UPCOMING_GROUP in group_ids else None,
+            "category_group_ids": {c: g for c, g in CATEGORY_GROUPS.items() if g in group_ids},
             "keys": keys, "open_tasks": open_tasks, "updatable": updatable, "order": order}
 
 
@@ -789,8 +795,9 @@ def stay_schedule(task, today):
 def release_upcoming(today):
     """Move held check-in/out requests whose day has come (deadline today or earlier) to the due group."""
     cols, groups = board_layout(HUB["tasks_board"])
-    held, due = groups.get(UPCOMING_GROUP), groups.get(DUE_GROUP) or groups.get(TASK_GROUP)
-    if not held or "Deadline" not in cols:
+    group_ids = set(groups.values())
+    held, due = UPCOMING_GROUP, DUE_GROUP if DUE_GROUP in group_ids else TASK_GROUP
+    if held not in group_ids or "Deadline" not in cols:
         return []
     data = monday("""query($id:[ID!], $group:[String], $cols:[String!]){boards(ids:$id){groups(ids:$group){
         items_page(limit:500){items{id name column_values(ids:$cols){text}}}}}}""",
