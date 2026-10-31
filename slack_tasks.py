@@ -321,11 +321,16 @@ def hospitable_pages(path, params):
         page += 1
 
 
-def monday(query, variables=None):
+# change_item_position and create_item's relative_to aren't in 2024-10. The rest of the script stays
+# on 2024-10 because newer versions dropped fields it reads (e.g. User.enabled).
+POSITION_API_VERSION = "2026-10"
+
+
+def monday(query, variables=None, api_version="2024-10"):
     resp = http_json(MONDAY_API, headers={
         "Authorization": os.environ["MONDAY_API_TOKEN"],
         "Content-Type": "application/json",
-        "API-Version": "2024-10",
+        "API-Version": api_version,
     }, body={"query": query, "variables": variables or {}})
     if resp.get("errors"):
         raise RuntimeError(f"monday API error: {json.dumps(resp['errors'])[:1000]}")
@@ -733,7 +738,8 @@ def regroup_by_property(board):
         for item, after in regroup_moves(group_order):
             if not DRY_RUN:
                 monday("""mutation($item:ID!, $after:ID!){change_item_position(item_id:$item, relative_to:$after,
-                    position_relative_method:after_at){id}}""", {"item": item, "after": after})
+                    position_relative_method:after_at){id}}""", {"item": item, "after": after},
+                       api_version=POSITION_API_VERSION)
             moved += 1
     return moved
 
@@ -883,7 +889,8 @@ def create_item(board, task, valid_user_ids, source_line, property_ids=(), count
     if after:
         data = monday("""mutation($board:ID!, $group:String, $name:String!, $vals:JSON!, $after:ID!){
             create_item(board_id:$board, group_id:$group, item_name:$name, column_values:$vals,
-                        relative_to:$after, position_relative_method:after_at){id}}""", {**variables, "after": after})
+                        relative_to:$after, position_relative_method:after_at){id}}""", {**variables, "after": after},
+            api_version=POSITION_API_VERSION)
     else:
         data = monday("""mutation($board:ID!, $group:String, $name:String!, $vals:JSON!){
             create_item(board_id:$board, group_id:$group, item_name:$name, column_values:$vals){id}}""", variables)
