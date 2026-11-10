@@ -23,7 +23,7 @@ import json
 import os
 import re
 
-from slack_tasks import LOCAL_TZ, log, monday
+from slack_tasks import LOCAL_TZ, POSITION_API_VERSION, log, monday
 
 TARGET_BOARD = 18439221614  # Purchase Requests
 NEW_GROUP = "topics"        # New Requests
@@ -247,11 +247,28 @@ def build_values(source, item, sub, req):
     return values
 
 
+def top_item(group_id=NEW_GROUP):
+    """The item at the top of the group, or None if it's empty."""
+    data = monday("""query($id:[ID!], $group:[String]){boards(ids:$id){groups(ids:$group){
+        items_page(limit:1){items{id}}}}}""", {"id": [TARGET_BOARD], "group": [group_id]})
+    groups = data["boards"][0]["groups"]
+    items = groups[0]["items_page"]["items"] if groups else []
+    return items[0]["id"] if items else None
+
+
 def create_request(name, values):
-    data = monday("""mutation($board:ID!, $group:String!, $name:String!, $values:JSON!){
-        create_item(board_id:$board, group_id:$group, item_name:$name, column_values:$values,
-                    create_labels_if_missing:false){id}}""",
-                  {"board": TARGET_BOARD, "group": NEW_GROUP, "name": name, "values": json.dumps(values)})
+    """Create the request at the top of New Requests, so the newest is always first."""
+    variables = {"board": TARGET_BOARD, "group": NEW_GROUP, "name": name, "values": json.dumps(values)}
+    first = top_item()
+    if first:
+        data = monday("""mutation($board:ID!, $group:String!, $name:String!, $values:JSON!, $first:ID!){
+            create_item(board_id:$board, group_id:$group, item_name:$name, column_values:$values,
+                        create_labels_if_missing:false, relative_to:$first, position_relative_method:before_at){id}}""",
+                      {**variables, "first": first}, api_version=POSITION_API_VERSION)
+    else:
+        data = monday("""mutation($board:ID!, $group:String!, $name:String!, $values:JSON!){
+            create_item(board_id:$board, group_id:$group, item_name:$name, column_values:$values,
+                        create_labels_if_missing:false){id}}""", variables)
     return data["create_item"]["id"]
 
 
@@ -270,26 +287,28 @@ def main():
     since = now - dt.timedelta(days=LOOKBACK_DAYS)
     done = existing_sources()
     added = 0
-    for source in SOURCES:
-        for item in recent_submissions(source, since):
-            if str(item["id"]) in done or item["name"].strip().upper().startswith("TEST"):
-                continue
-            sub = submission_values(item)
-            req = parse_request(sub)
-            if not req:
-                continue
-            name = item_name(sub.get(S_PROPERTY), item["name"].strip())
-            values = build_values(source, item, sub, req)
-            if DRY_RUN:
-                log(f"[dry run] {source['country']}: {name} — {req['type']} ({req['summary']}) from {item['name']} ({item['url']})")
-                for thing in req["items"]:
-                    log(f"    - {thing}")
-                continue
-            new_id = create_request(name, values)
-            create_subitems(new_id, req["items"])
-            done.add(str(item["id"]))
-            added += 1
-            log(f"Added {name} ({req['type']}) from {item['name']} → item {new_id}")
+    # Oldest first: each request goes on top, so the newest submission ends up first.
+    found = [(source, item) for source in SOURCES for item in recent_submissions(source, since)]
+    found.sort(key=lambda pair: pair[1]["created_at"])
+    for source, item in found:
+        if str(item["id"]) in done or item["name"].strip().upper().startswith("TEST"):
+            continue
+        sub = submission_values(item)
+        req = parse_request(sub)
+        if not req:
+            continue
+        name = item_name(sub.get(S_PROPERTY), item["name"].strip())
+        values = build_values(source, item, sub, req)
+        if DRY_RUN:
+            log(f"[dry run] {source['country']}: {name} — {req['type']} ({req['summary']}) from {item['name']} ({item['url']})")
+            for thing in req["items"]:
+                log(f"    - {thing}")
+            continue
+        new_id = create_request(name, values)
+        create_subitems(new_id, req["items"])
+        done.add(str(item["id"]))
+        added += 1
+        log(f"Added {name} ({req['type']}) from {item['name']} → item {new_id}")
     log(f"Purchase requests: {added} added" + (" (dry run)" if DRY_RUN else ""))
 
 

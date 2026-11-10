@@ -73,7 +73,7 @@ Host replies in Hospitable and outgoing Quo texts made only of thanks, greetings
 
 ### Purchase requests from the General Form
 
-Every run also copies cleaners' purchase and supply requests from **Field Team Submissions (General Form)** (Canada `18435476614`, USA `18435502755`) to the **Purchase Requests** board (Instastay → 📋 Task Hub, `18439221614`), into **New Requests**. `purchase_requests.py` does this, with no Claude call. A submission counts as a request when it has any of:
+Every run also copies cleaners' purchase and supply requests from **Field Team Submissions (General Form)** (Canada `18435476614`, USA `18435502755`) to the **Purchase Requests** board (Instastay → 📋 Task Hub, `18439221614`), at the top of **New Requests**, so the group runs newest to oldest. `purchase_requests.py` does this, with no Claude call. A submission counts as a request when it has any of:
 
 | In the form | Request Type |
 |---|---|
