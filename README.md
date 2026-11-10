@@ -12,7 +12,7 @@ Every **5 minutes**, this workflow reads new Slack messages and guest conversati
    - a **deadline**, if one was mentioned ("by Friday", "tomorrow").
 3. **Add:** creates the task on the **Task Hub** board (Instastay Automated → 📋 Task Hub, `18436688444`), which holds the tasks of both countries. Its **Country** column says which one a task is for (USA, Canada, or Both for the shared Daily Checklist), and its 🇺🇸 USA / 🇨🇦 Canada views filter on it.
 
-Each new item goes in the **Active task** group (Maintenance tasks go in **Property Maintenance** and Claims tasks, warranty claims included, in **Claims**, so each kind is listed in one place) with:
+Each new item goes in the **Active task** group (Maintenance tasks go in **Property Maintenance**, as subitems of their property's row, see below, and Claims tasks, warranty claims included, in **Claims**, so each kind is listed in one place) with:
 
 - **Name:** a short description of the task.
 - **Country:** USA or Canada.
@@ -22,6 +22,12 @@ Each new item goes in the **Active task** group (Maintenance tasks go in **Prope
 - **Property Link:** the property the task is about, linked to its row in that country's Properties Master (the column connects to both). Guest tasks link through the property's Hospitable ID; for Slack and Quo, Claude picks the property from the Properties Master list.
 - **Deadline:** always set. A date given in the conversation is used as is. Otherwise Claude sets one from urgency: today for problems affecting a staying guest or safety; the day before the next check-in for turnover work; 1–2 days for replies, laundry, deliveries and payments; 3–7 days for routine maintenance and purchases; up to 2 weeks for admin and licensing.
 - **Notes/Updates:** the details, where it came from (a link to the Slack message, or the guest, property and reservation code), and a `[slack …]` or `[hospitable …]` key. The key stops the same message from ever creating a second item.
+
+### Property Maintenance: one row per property
+
+In **Property Maintenance** each row is a property (named after it, linked to its Properties Master row, with its Country), and the maintenance tasks for that property are the row's **subitems**. A new Maintenance task goes under its property's row; the row is created the first time a property gets a task. Tasks not tied to a property go under **No property (USA)** or **No property (Canada)**.
+
+Each subitem has the task's Person, Status, Deadline and Notes/Updates (with the source key), and Claude updates and closes subitems the same way as other tasks, with a comment on the subitem. The row keeps up with its open subitems: its Deadline is the earliest open deadline, its Person everyone assigned to an open subitem, and its Status Working on it once any subitem is in progress. When every subitem is Done the row is marked Done, moves to **Completed task**, and is archived that night with its subitems. A task for that property after that starts a new row.
 
 ### Early check-in and late checkout requests
 

@@ -431,3 +431,112 @@ class ArchiveTests(unittest.TestCase):
         with mock.patch.object(a, "monday", return_value=page):
             items = a.finished_items(1, "status", "rel", "country")
         self.assertEqual([(i["id"], i["properties"], i["country"]) for i in items], [(1, [77], "Canada"), (2, [], "?")])
+
+
+class MaintenanceRowTests(unittest.TestCase):
+    SUB_COLS = {"Person": "person", "Status": "status", "Deadline": "date0", "Notes/Updates": "text_sub"}
+
+    def board(self, rows=None):
+        return {"board_id": 1, "done_group_id": "g_done", "updatable": {},
+                "cols": {**COLS, "Country": "country", "Category": "cat", "Property Link": "link"},
+                "maint": rows if rows is not None else {}}
+
+    def row(self, **subs):
+        return {"id": 500, "name": "1456 Evans Blvd", "country": "Canada", "property": 77,
+                "subs": {int(k[1:]): {"id": int(k[1:]), "name": k, "status": v[0], "deadline": v[1],
+                                      "people": v[2], "assigned": "", "notes": "", "keys": []}
+                         for k, v in subs.items()}}
+
+    def fake_monday(self, calls, new_id=900):
+        def fake(q, v=None, **_):
+            calls.append((q, v))
+            if "create_item" in q:
+                return {"create_item": {"id": str(new_id)}}
+            if "create_subitem" in q:
+                return {"create_subitem": {"id": "901"}}
+            return {}
+        return fake
+
+    def test_row_summary(self):
+        row = self.row(s1=("Not done", "2026-11-12", [11]), s2=("Working on it", "2026-11-10", [12]),
+                       s3=("Done", "2026-11-01", [13]))
+        self.assertEqual(s.row_summary(row), ("Working on it", "2026-11-10", [11, 12]))
+        self.assertEqual(s.row_summary(self.row(s1=("Not done", "", []))), ("Not done", None, []))
+        self.assertEqual(s.row_summary(self.row(s1=("Done", "", [11]))), ("Done", None, []))
+
+    def test_new_task_joins_its_property_row(self):
+        board, calls = self.board({500: self.row(s1=("Not done", "2026-11-12", [11]))}), []
+        with mock.patch.object(s, "monday", side_effect=self.fake_monday(calls)), \
+                mock.patch.object(s, "subitem_layout", return_value=(self.SUB_COLS, 2)):
+            sub_id = s.create_maintenance_task(board, task(title="Fix drawer", deadline="2026-11-10"), {11}, "Quo: x",
+                                               [77], "Canada", {77: "1456 Evans Blvd"})
+        self.assertEqual(sub_id, 901)
+        self.assertFalse(any("create_item" in q for q, _ in calls))  # no new row
+        sub_q, sub_v = next((q, v) for q, v in calls if "create_subitem" in q)
+        self.assertEqual(sub_v["parent"], 500)
+        self.assertEqual(sub_v["name"], "Fix drawer")
+        vals = json.loads(sub_v["vals"])
+        self.assertEqual(vals["date0"], {"date": "2026-11-10"})
+        self.assertEqual(vals["person"], {"personsAndTeams": [{"id": 11, "kind": "person"}]})
+        self.assertIn("[slack C1 1760000000.000100]", vals["text_sub"])
+        row_vals = json.loads(next(v for q, v in calls if "change_multiple_column_values" in q)["vals"])
+        self.assertEqual(row_vals["date_mm7ytd1z"], {"date": "2026-11-10"})  # earliest open deadline
+        self.assertEqual(row_vals["status"], {"label": "Not done"})
+
+    def test_first_task_for_a_property_creates_its_row(self):
+        board, calls = self.board(), []
+        with mock.patch.object(s, "monday", side_effect=self.fake_monday(calls)), \
+                mock.patch.object(s, "subitem_layout", return_value=(self.SUB_COLS, 2)):
+            s.create_maintenance_task(board, task(), {11}, "", [77], "Canada", {77: "1456 Evans Blvd"})
+            s.create_maintenance_task(board, task(title="Other"), {11}, "", [], "USA", {})
+        creates = [v for q, v in calls if "create_item" in q]
+        self.assertEqual([c["name"] for c in creates], ["1456 Evans Blvd", "No property (USA)"])
+        self.assertEqual(creates[0]["group"], s.MAINT_GROUP)
+        self.assertEqual(json.loads(creates[0]["vals"])["link"], {"item_ids": [77]})
+        self.assertEqual(set(board["maint"]), {900})  # both rows got id 900 from the fake; one entry
+
+    def test_closing_the_last_subitem_closes_the_row(self):
+        row = self.row(s1=("Working on it", "2026-11-10", [11]))
+        board, calls = self.board({500: row}), []
+        board["updatable"][1] = {"id": 1, "parent": 500}
+        with mock.patch.object(s, "monday", side_effect=self.fake_monday(calls)), \
+                mock.patch.object(s, "subitem_layout", return_value=(self.SUB_COLS, 2)):
+            s.apply_task_update(board, 1, "done", "Terry fixed it.", "")
+        sub_change = calls[0][1]
+        self.assertEqual(sub_change["board"], 2)
+        self.assertEqual(json.loads(sub_change["vals"]), {"status": {"label": "Done"}})
+        self.assertEqual(calls[1][1], {"item": 1, "body": "Terry fixed it."})
+        self.assertEqual(json.loads(calls[2][1]["vals"])["status"], {"label": "Done"})
+        self.assertEqual(calls[3][1], {"item": 500, "group": "g_done"})
+        self.assertNotIn(500, board["maint"])
+
+    def test_closing_one_of_several_keeps_the_row_open(self):
+        row = self.row(s1=("Working on it", "2026-11-10", [11]), s2=("Not done", "2026-11-14", [12]))
+        board, calls = self.board({500: row}), []
+        board["updatable"][1] = {"id": 1, "parent": 500}
+        with mock.patch.object(s, "monday", side_effect=self.fake_monday(calls)), \
+                mock.patch.object(s, "subitem_layout", return_value=(self.SUB_COLS, 2)):
+            s.apply_task_update(board, 1, "done", "Done.", "")
+        self.assertFalse(any("move_item_to_group" in q for q, _ in calls))
+        row_vals = json.loads(calls[-1][1]["vals"])
+        self.assertEqual(row_vals["date_mm7ytd1z"], {"date": "2026-11-14"})
+        self.assertEqual(row_vals["person"], {"personsAndTeams": [{"id": 12, "kind": "person"}]})
+
+    def test_load_board_lists_subitems_not_rows(self):
+        items = [{"id": "500", "name": "1456 Evans Blvd", "group": {"id": s.MAINT_GROUP, "title": "Property Maintenance"},
+                  "column_values": [{"id": "status", "text": "Not done"}, {"id": "text_mm7xv1hm", "text": ""},
+                                    {"id": "country", "text": "Canada"}]}]
+        row = self.row(s1=("Not done", "2026-11-10", [11]), s2=("Done", "", []))
+        row["subs"][1]["notes"] = "Fix it\n[quo CN1 AC1]"
+        row["subs"][1]["keys"] = [("quo", "CN1", "AC1")]
+        layout = ({"Person": "person", "Status": "status", "Deadline": "date_mm7ytd1z", "Notes/Updates": "text_mm7xv1hm",
+                   "Country": "country"}, {"Active task": s.TASK_GROUP, "Property Maintenance": s.MAINT_GROUP})
+        with mock.patch.object(s, "board_layout", return_value=layout), \
+                mock.patch.object(s, "board_items", side_effect=lambda b, c, subitems=False: [] if subitems else items), \
+                mock.patch.object(s, "maintenance_rows", return_value={500: row}):
+            board = s.load_board()
+        self.assertEqual(list(board["updatable"]), [1])
+        self.assertEqual(board["updatable"][1]["parent"], 500)
+        self.assertEqual(board["updatable"][1]["name"], "s1 (at 1456 Evans Blvd)")
+        self.assertIn(("quo", "CN1", "AC1"), board["keys"])
+        self.assertEqual(board["open_tasks"], [])
