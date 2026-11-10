@@ -35,7 +35,7 @@ T_COUNTRY = "color_mm8zsvsh"
 T_PROPERTY = "text_mm8zvm98"
 T_BY = "text_mm8zznxw"
 T_DATE = "date_mm8zfc06"
-T_ITEMS = "long_text_mm8zbne"
+T_NOTES = "long_text_mm8zbne"   # receipts and the cleaner's notes
 T_AMOUNT = "numeric_mm8z3m74"
 T_PRIORITY = "color_mm8z6nce"
 T_SUBMISSION = "link_mm8zjts6"
@@ -118,15 +118,7 @@ def parse_request(sub):
     else:
         return None
 
-    lines = []
-    if bought or purchased:
-        lines.append(f"Purchased: {bought or '(not listed)'}")
-    if needed:
-        lines.append(f"Supplies needed: {', '.join(needed)}")
-    if bedding:
-        lines.append(f"Bedding needed: {bedding}")
-    if urgent:
-        lines.append(f"Request: {urgent}")
+    lines = []  # the items themselves go in subitems; Notes keeps receipts and the cleaner's notes
     receipts = (sub.get(S_RECEIPTS) or "").strip()
     if receipts:
         lines.append(f"Receipts: {receipts}")
@@ -135,7 +127,7 @@ def parse_request(sub):
         lines.append(f"Cleaner's notes: {notes}")
 
     if kind == TYPE_PURCHASE:
-        things = split_items(bought)
+        things = split_items(bought) or ["Items not listed (see receipts)"]
     else:
         things = needed + [f"Bedding: {b}" for b in split_items(bedding)] + split_items(urgent)
 
@@ -150,14 +142,12 @@ def parse_request(sub):
             "items": things}
 
 
-def item_name(prop, req):
-    head = f"{prop}: " if prop else ""
-    if req["type"] == TYPE_PURCHASE:
-        head = f"{head}Bought "
-    name = head + req["summary"]
-    if req["type"] == TYPE_PURCHASE and req["amount"] is not None:
-        name += f" (${req['amount']:.2f})"
-    return name if len(name) <= NAME_LIMIT else name[:NAME_LIMIT - 1].rstrip() + "…"
+def item_name(prop, requester=""):
+    """The request's name is just the property; the items are its subitems."""
+    prop = (prop or "").strip()
+    if not prop or prop.lower().startswith("other"):
+        return f"Other property ({requester})" if requester else "Other property"
+    return prop[:NAME_LIMIT]
 
 
 # --------------------------------------------------------------------- properties
@@ -244,7 +234,7 @@ def build_values(source, item, sub, req):
         T_PROPERTY: prop,
         T_BY: item["name"].strip(),
         T_DATE: {"date": day},
-        T_ITEMS: {"text": req["details"]},
+        T_NOTES: {"text": req["details"]},
         T_SUBMISSION: {"url": item["url"], "text": "Form submission"},
         T_SOURCE: str(item["id"]),
     }
@@ -288,10 +278,10 @@ def main():
             req = parse_request(sub)
             if not req:
                 continue
-            name = item_name((sub.get(S_PROPERTY) or "").strip(), req)
+            name = item_name(sub.get(S_PROPERTY), item["name"].strip())
             values = build_values(source, item, sub, req)
             if DRY_RUN:
-                log(f"[dry run] {source['country']}: {name} — {req['type']} from {item['name']} ({item['url']})")
+                log(f"[dry run] {source['country']}: {name} — {req['type']} ({req['summary']}) from {item['name']} ({item['url']})")
                 for thing in req["items"]:
                     log(f"    - {thing}")
                 continue

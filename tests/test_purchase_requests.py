@@ -29,7 +29,8 @@ class ParseRequestTests(unittest.TestCase):
         req = p.parse_request(sub(form=CLEANING, supplies="Toilet paper, Shampoo", bedding="No"))
         self.assertEqual(req["type"], p.TYPE_SUPPLIES)
         self.assertEqual(req["summary"], "Toilet paper, Shampoo")
-        self.assertIn("Supplies needed: Toilet paper, Shampoo", req["details"])
+        self.assertEqual(req["items"], ["Toilet paper", "Shampoo"])
+        self.assertNotIn("Toilet paper", req["details"])
 
     def test_bedding_only(self):
         req = p.parse_request(sub(form=CLEANING, supplies="NO RESTOCK NEEDED", bedding="King size bedsheets"))
@@ -42,7 +43,8 @@ class ParseRequestTests(unittest.TestCase):
         self.assertEqual(req["type"], p.TYPE_PURCHASE)
         self.assertEqual(req["amount"], 12.79)
         self.assertIn("Receipts: https://x/IMG.jpeg", req["details"])
-        self.assertEqual(p.item_name("Spruce Main 306", req), "Spruce Main 306: Bought Coffee pods ($12.79)")
+        self.assertEqual(req["details"], "Receipts: https://x/IMG.jpeg")
+        self.assertEqual(p.item_name("Spruce Main 306", "Falis"), "Spruce Main 306")
 
     def test_purchase_no_is_skipped(self):
         self.assertIsNone(p.parse_request(sub(form="Service Completion Form", purchased="No")))
@@ -50,11 +52,15 @@ class ParseRequestTests(unittest.TestCase):
     def test_urgent_form(self):
         req = p.parse_request(sub(form=URGENT, urgent="Dish pods for dishwasher"))
         self.assertEqual(req["type"], p.TYPE_URGENT)
-        self.assertEqual(p.item_name("Evans 1456", req), "Evans 1456: Dish pods for dishwasher")
+        self.assertEqual(p.item_name("Evans 1456"), "Evans 1456")
 
-    def test_long_name_is_cut(self):
-        req = p.parse_request(sub(form=URGENT, urgent="x " * 100))
-        self.assertLessEqual(len(p.item_name("Evans 1456", req)), p.NAME_LIMIT)
+    def test_name_is_only_the_property(self):
+        self.assertEqual(p.item_name("Others (Please specify on the description)", "Falis"), "Other property (Falis)")
+        self.assertEqual(p.item_name("", ""), "Other property")
+
+    def test_purchase_without_items_listed(self):
+        req = p.parse_request(sub(form="Service", purchased="Yes", amount="20"))
+        self.assertEqual(req["items"], ["Items not listed (see receipts)"])
 
 
 class SplitItemsTests(unittest.TestCase):
