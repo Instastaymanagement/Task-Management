@@ -66,7 +66,7 @@ S_COLUMNS = [S_PROPERTY, S_FORM_TYPE, S_SUPPLIES, S_BEDDING, S_URGENT, S_PURCHAS
              S_RECEIPTS, S_AMOUNT, S_PRIORITY, S_NOTES]
 
 NO_RESTOCK = "no restock needed"
-NOTHING_RE = re.compile(r"^(no|nope|none|nothing|nil|n/?a|-+|0|not needed|no need(ed)?|all good|good|ok(ay)?)"
+NOTHING_RE = re.compile(r"^(no|nk|nah|nope|none|nothing|nil|n/?a|-+|0|not needed|no need(ed)?|all good|good|ok(ay)?)"
                         r"[\s.!]*$", re.I)
 URGENT_FORM = "urgent maintenance / supplies"
 PRIORITIES = {"Low", "Medium", "High"}
@@ -78,6 +78,8 @@ TYPE_SUPPLIES = "Supplies needed"
 
 DRY_RUN = os.environ.get("DRY_RUN", "").lower() in ("1", "true", "yes")
 LOOKBACK_DAYS = float(os.environ.get("PURCHASE_LOOKBACK_DAYS") or 7)
+# Submissions for work before this date are never copied (the board starts with November 2026).
+SINCE_DATE = os.environ.get("PURCHASE_SINCE") or "2026-11-01"
 NAME_LIMIT = 90
 
 
@@ -218,10 +220,15 @@ def submission_values(item):
     return values
 
 
-def build_values(source, item, sub, req):
+def submission_day(source, item, sub):
+    """The date the cleaner gave in the form, or the day it was submitted (Toronto time)."""
     created = dt.datetime.fromisoformat(item["created_at"].replace("Z", "+00:00"))
-    day = next((sub[c] for c in source["date_cols"] if sub.get(c)), None) or \
+    return next((sub[c] for c in source["date_cols"] if sub.get(c)), None) or \
         created.astimezone(LOCAL_TZ).date().isoformat()
+
+
+def build_values(source, item, sub, req):
+    day = submission_day(source, item, sub)
     prop = (sub.get(S_PROPERTY) or "").strip()
     links = sub.get(source["relation"]) or []
     if not links and prop:
@@ -288,12 +295,17 @@ def main():
     done = existing_sources()
     added = 0
     # Oldest first: each request goes on top, so the newest submission ends up first.
-    found = [(source, item) for source in SOURCES for item in recent_submissions(source, since)]
-    found.sort(key=lambda pair: pair[1]["created_at"])
-    for source, item in found:
+    found = []
+    for source in SOURCES:
+        for item in recent_submissions(source, since):
+            sub = submission_values(item)
+            day = submission_day(source, item, sub)
+            if day >= SINCE_DATE:
+                found.append((day, item["created_at"], source, item, sub))
+    found.sort(key=lambda f: f[:2])
+    for _day, _created, source, item, sub in found:
         if str(item["id"]) in done or item["name"].strip().upper().startswith("TEST"):
             continue
-        sub = submission_values(item)
         req = parse_request(sub)
         if not req:
             continue

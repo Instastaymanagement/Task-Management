@@ -24,6 +24,8 @@ class ParseRequestTests(unittest.TestCase):
     def test_nothing_needed_is_skipped(self):
         self.assertIsNone(p.parse_request(sub(form=CLEANING, supplies="NO RESTOCK NEEDED", bedding="No")))
         self.assertIsNone(p.parse_request(sub(form=CLEANING, supplies=None, bedding="n/a", notes="All done")))
+        self.assertEqual(p.parse_request(sub(form=CLEANING, supplies="Toilet paper", bedding="Nk"))["items"],
+                         ["Toilet paper"])
 
     def test_supplies_needed(self):
         req = p.parse_request(sub(form=CLEANING, supplies="Toilet paper, Shampoo", bedding="No"))
