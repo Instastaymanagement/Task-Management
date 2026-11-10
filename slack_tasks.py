@@ -1008,6 +1008,14 @@ def create_maintenance_task(board, task, valid_user_ids, source_line, property_i
     sub_cols, _ = subitem_layout()
     notes = build_notes(task, source_line)
     vals = {sub_cols["Status"]: {"label": NEW_STATUS}, sub_cols["Notes/Updates"]: notes}
+    # Same Country / Category / Property Link as a task elsewhere on the board, so the USA, Canada and
+    # by-property views can match the subitem itself.
+    if COUNTRY_COLUMN in sub_cols:
+        vals[sub_cols[COUNTRY_COLUMN]] = {"label": country}
+    if CATEGORY_COLUMN in sub_cols:
+        vals[sub_cols[CATEGORY_COLUMN]] = {"label": "Maintenance"}
+    if property_ids and "Property Link" in sub_cols:
+        vals[sub_cols["Property Link"]] = {"item_ids": [int(p) for p in property_ids]}
     people = [i for i in dict.fromkeys(task["assignee_ids"]) if i in valid_user_ids]
     if people:
         vals[sub_cols["Person"]] = {"personsAndTeams": [{"id": i, "kind": "person"} for i in people]}
