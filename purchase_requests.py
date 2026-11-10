@@ -8,7 +8,10 @@ A Field Team Submissions (General Form) item becomes a purchase request when it 
   - something in "Beddings Needed?" other than "No" / "None" / "N/A",
   - Form Type "Urgent Maintenance / Supplies Requests".
 
-Each submission gives at most one request, with one subitem per item needed or bought. The request's "Form Item ID" column holds the
+Each submission gives one subitem per item needed or bought. Submissions for a property that already
+has an open request in New Requests are merged into it (one list per property), so each property has
+at most one supply request and one purchase request waiting there. Once a request is moved out of
+New Requests, the next submission for that property starts a new one. The request's "Form Item ID" column holds the
 submission's item id, so a submission is never copied twice. Only submissions from the last
 PURCHASE_LOOKBACK_DAYS days are looked at.
 
@@ -43,6 +46,8 @@ T_PROPERTY_LINK = "board_relation_mm8z5e62"
 T_SOURCE = "text_mm8z4dqq"
 SUB_STATUS = "color_mm8zdcgd"   # Status on the subitems board: Needed / Ordered / Done / Not needed
 SUB_NEW_STATUS = "Needed"
+SUB_DATE = "date0"              # Date on the subitems board: the day the item was asked for
+SUB_DONE = {"done", "not needed"}
 
 # Field Team Submissions boards. Both have the same form columns; dates and property links differ.
 SOURCES = [
@@ -188,7 +193,7 @@ def existing_sources():
         page = monday(f"query($c:String!){{next_items_page(limit:500, cursor:$c){{cursor {fields}}}}}",
                       {"c": page["cursor"]})["next_items_page"]
         items.extend(page["items"])
-    return {(c["text"] or "").strip() for it in items for c in it["column_values"]} - {""}
+    return {s.strip() for it in items for c in it["column_values"] for s in (c["text"] or "").split(",")} - {""}
 
 
 def recent_submissions(source, since):
@@ -227,6 +232,10 @@ def submission_day(source, item, sub):
         created.astimezone(LOCAL_TZ).date().isoformat()
 
 
+def notes_block(day, who, details):
+    return "\n".join(f"{day} · {who}: {line}" for line in details.splitlines() if line.strip())
+
+
 def build_values(source, item, sub, req):
     day = submission_day(source, item, sub)
     prop = (sub.get(S_PROPERTY) or "").strip()
@@ -241,7 +250,7 @@ def build_values(source, item, sub, req):
         T_PROPERTY: prop,
         T_BY: item["name"].strip(),
         T_DATE: {"date": day},
-        T_NOTES: {"text": req["details"]},
+        T_NOTES: {"text": notes_block(day, item["name"].strip(), req["details"])},
         T_SUBMISSION: {"url": item["url"], "text": "Form submission"},
         T_SOURCE: str(item["id"]),
     }
@@ -252,6 +261,74 @@ def build_values(source, item, sub, req):
     if links:
         values[T_PROPERTY_LINK] = {"item_ids": links}
     return values
+
+
+def merge_key(country, prop, kind):
+    """Requests with the same key share one list: supplies and urgent requests together, purchases
+    (which are paid back to the cleaner) on their own."""
+    return (country, " ".join((prop or "").lower().split()), "purchase" if kind == TYPE_PURCHASE else "supplies")
+
+
+def open_requests():
+    """The requests in New Requests, keyed by merge_key, with their columns and subitems."""
+    cols = [T_TYPE, T_COUNTRY, T_PROPERTY, T_BY, T_DATE, T_NOTES, T_AMOUNT, T_PRIORITY, T_SOURCE]
+    data = monday("""query($id:[ID!], $group:[String], $cols:[String!]){boards(ids:$id){groups(ids:$group){
+        items_page(limit:500){items{id name column_values(ids:$cols){id text}
+        subitems{name column_values(ids:["%s"]){text}}}}}}}""" % SUB_STATUS,
+                  {"id": [TARGET_BOARD], "group": [NEW_GROUP], "cols": cols})
+    groups = data["boards"][0]["groups"]
+    out = {}
+    for it in (groups[0]["items_page"]["items"] if groups else []):
+        values = {c["id"]: c["text"] or "" for c in it["column_values"]}
+        if not values.get(T_PROPERTY):
+            continue  # nothing to match on
+        req = {"id": it["id"], "values": values,
+               "open_items": {" ".join(si["name"].lower().split()) for si in it.get("subitems") or []
+                              if (si["column_values"][0]["text"] or "").lower() not in SUB_DONE}}
+        out.setdefault(merge_key(values[T_COUNTRY], values[T_PROPERTY], values[T_TYPE]), req)
+    return out
+
+
+def merge_values(existing, values, req):
+    """Column changes that add a new submission (`values`, from build_values) to an open request."""
+    old = existing["values"]
+    sources = [s.strip() for s in old.get(T_SOURCE, "").split(",") if s.strip()]
+    people = [p.strip() for p in old.get(T_BY, "").split(",") if p.strip()]
+    who = values[T_BY]
+    out = {
+        T_SOURCE: ", ".join(sources + [values[T_SOURCE]]),
+        T_BY: ", ".join(people + ([who] if who.lower() not in (p.lower() for p in people) else [])),
+        T_DATE: {"date": max(old.get(T_DATE) or "", values[T_DATE]["date"])},
+        T_SUBMISSION: values[T_SUBMISSION],
+    }
+    new_notes = values[T_NOTES]["text"]
+    if new_notes:
+        out[T_NOTES] = {"text": "\n".join(n for n in (old.get(T_NOTES, "").strip(), new_notes) if n)}
+    if old.get(T_TYPE) != TYPE_URGENT and req["type"] == TYPE_URGENT:
+        out[T_TYPE] = {"label": TYPE_URGENT}
+    if req["amount"] is not None:
+        try:
+            total = float(old.get(T_AMOUNT) or 0) + req["amount"]
+        except ValueError:
+            total = req["amount"]
+        out[T_AMOUNT] = str(round(total, 2))
+    rank = ["", "Low", "Medium", "High"]
+    new_priority = (values.get(T_PRIORITY) or {}).get("label", "")
+    if rank.index(new_priority) > rank.index(old.get(T_PRIORITY, "") if old.get(T_PRIORITY) in rank else ""):
+        out[T_PRIORITY] = {"label": new_priority}
+    return out
+
+
+def new_items(existing, names):
+    """The names not already open on the request (asking for sugar twice gives one Sugar)."""
+    seen = set(existing["open_items"]) if existing else set()
+    out = []
+    for name in names:
+        key = " ".join(name.lower().split())
+        if key not in seen:
+            seen.add(key)
+            out.append(name)
+    return out
 
 
 def top_item(group_id=NEW_GROUP):
@@ -279,9 +356,26 @@ def create_request(name, values):
     return data["create_item"]["id"]
 
 
-def create_subitems(parent_id, names):
+def update_request(item_id, values):
+    monday("""mutation($board:ID!, $item:ID!, $values:JSON!){change_multiple_column_values(board_id:$board,
+        item_id:$item, column_values:$values, create_labels_if_missing:false){id}}""",
+           {"board": TARGET_BOARD, "item": item_id, "values": json.dumps(values)})
+
+
+def move_to_top(item_id):
+    first = top_item()
+    if first and str(first) != str(item_id):
+        monday("""mutation($item:ID!, $first:ID!){change_item_position(item_id:$item, relative_to:$first,
+            position_relative_method:before_at){id}}""", {"item": item_id, "first": first},
+               api_version=POSITION_API_VERSION)
+
+
+def create_subitems(parent_id, names, day=None):
     """One subitem per thing requested or bought, so each can be ticked off on its own."""
-    values = json.dumps({SUB_STATUS: {"label": SUB_NEW_STATUS}})
+    sub_values = {SUB_STATUS: {"label": SUB_NEW_STATUS}}
+    if day:
+        sub_values[SUB_DATE] = {"date": day}
+    values = json.dumps(sub_values)
     for name in names:
         monday("""mutation($parent:ID!, $name:String!, $values:JSON!){
             create_subitem(parent_item_id:$parent, item_name:$name, column_values:$values,
@@ -293,7 +387,8 @@ def main():
     now = dt.datetime.now(dt.timezone.utc)
     since = now - dt.timedelta(days=LOOKBACK_DAYS)
     done = existing_sources()
-    added = 0
+    pending = open_requests()
+    added = merged = 0
     # Oldest first: each request goes on top, so the newest submission ends up first.
     found = []
     for source in SOURCES:
@@ -303,7 +398,7 @@ def main():
             if day >= SINCE_DATE:
                 found.append((day, item["created_at"], source, item, sub))
     found.sort(key=lambda f: f[:2])
-    for _day, _created, source, item, sub in found:
+    for day, _created, source, item, sub in found:
         if str(item["id"]) in done or item["name"].strip().upper().startswith("TEST"):
             continue
         req = parse_request(sub)
@@ -311,17 +406,38 @@ def main():
             continue
         name = item_name(sub.get(S_PROPERTY), item["name"].strip())
         values = build_values(source, item, sub, req)
+        key = merge_key(source["country"], values[T_PROPERTY], req["type"])
+        existing = pending.get(key) if values[T_PROPERTY] and not name.startswith("Other property") else None
+        items = new_items(existing, req["items"])
         if DRY_RUN:
-            log(f"[dry run] {source['country']}: {name} — {req['type']} ({req['summary']}) from {item['name']} ({item['url']})")
-            for thing in req["items"]:
+            what = f"merge into {existing['id']}" if existing else "new request"
+            log(f"[dry run] {source['country']}: {name} — {req['type']}, {what}, from {item['name']} ({item['url']})")
+            for thing in items:
                 log(f"    - {thing}")
             continue
-        new_id = create_request(name, values)
-        create_subitems(new_id, req["items"])
+        if existing:
+            changes = merge_values(existing, values, req)
+            update_request(existing["id"], changes)
+            create_subitems(existing["id"], items, day)
+            move_to_top(existing["id"])
+            existing["values"].update({k: v if isinstance(v, str) else v.get("text") or v.get("date") or v.get("label")
+                                       for k, v in changes.items() if k != T_SUBMISSION})
+            existing["open_items"].update(" ".join(i.lower().split()) for i in items)
+            merged += 1
+            log(f"Merged {item['name']}'s request into {name} (item {existing['id']}): {', '.join(items) or 'no new items'}")
+        else:
+            new_id = create_request(name, values)
+            create_subitems(new_id, items, day)
+            if values[T_PROPERTY] and not name.startswith("Other property"):
+                pending[key] = {"id": new_id, "open_items": {" ".join(i.lower().split()) for i in items},
+                                "values": {T_SOURCE: values[T_SOURCE], T_BY: values[T_BY], T_DATE: day,
+                                           T_NOTES: values[T_NOTES]["text"], T_TYPE: req["type"],
+                                           T_AMOUNT: values.get(T_AMOUNT, ""),
+                                           T_PRIORITY: (values.get(T_PRIORITY) or {}).get("label", "")}}
+            added += 1
+            log(f"Added {name} ({req['type']}) from {item['name']} → item {new_id}")
         done.add(str(item["id"]))
-        added += 1
-        log(f"Added {name} ({req['type']}) from {item['name']} → item {new_id}")
-    log(f"Purchase requests: {added} added" + (" (dry run)" if DRY_RUN else ""))
+    log(f"Purchase requests: {added} added, {merged} merged" + (" (dry run)" if DRY_RUN else ""))
 
 
 if __name__ == "__main__":

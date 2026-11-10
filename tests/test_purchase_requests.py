@@ -95,5 +95,52 @@ class PropertyMatchTests(unittest.TestCase):
         self.assertIsNone(p.property_match("", CANADA))
 
 
+class MergeTests(unittest.TestCase):
+    def existing(self, **values):
+        base = {p.T_SOURCE: "111", p.T_BY: "Falis Abdulle", p.T_DATE: "2026-11-01", p.T_NOTES: "",
+                p.T_TYPE: p.TYPE_SUPPLIES, p.T_AMOUNT: "", p.T_PRIORITY: ""}
+        base.update(values)
+        return {"id": "9", "values": base, "open_items": {"sugar", "laundry soap"}}
+
+    def new_values(self, **kw):
+        base = {p.T_SOURCE: "222", p.T_BY: "Melissa lamarsh", p.T_DATE: {"date": "2026-11-06"},
+                p.T_NOTES: {"text": ""}, p.T_SUBMISSION: {"url": "u", "text": "Form submission"}}
+        base.update(kw)
+        return base
+
+    def test_key_groups_supplies_and_urgent_but_not_purchases(self):
+        self.assertEqual(p.merge_key("Canada", "Evans  1456", p.TYPE_SUPPLIES),
+                         p.merge_key("Canada", "evans 1456", p.TYPE_URGENT))
+        self.assertNotEqual(p.merge_key("Canada", "Evans 1456", p.TYPE_SUPPLIES),
+                            p.merge_key("Canada", "Evans 1456", p.TYPE_PURCHASE))
+
+    def test_merge_values(self):
+        out = p.merge_values(self.existing(), self.new_values(
+            **{p.T_NOTES: {"text": "2026-11-06 · Melissa lamarsh: Cleaner's notes: deep clean"},
+               p.T_PRIORITY: {"label": "Medium"}}), {"type": p.TYPE_URGENT, "amount": None})
+        self.assertEqual(out[p.T_SOURCE], "111, 222")
+        self.assertEqual(out[p.T_BY], "Falis Abdulle, Melissa lamarsh")
+        self.assertEqual(out[p.T_DATE], {"date": "2026-11-06"})
+        self.assertEqual(out[p.T_TYPE], {"label": p.TYPE_URGENT})
+        self.assertEqual(out[p.T_PRIORITY], {"label": "Medium"})
+        self.assertIn("deep clean", out[p.T_NOTES]["text"])
+
+    def test_same_person_and_amounts_add_up(self):
+        out = p.merge_values(self.existing(**{p.T_TYPE: p.TYPE_PURCHASE, p.T_AMOUNT: "12.5"}),
+                             self.new_values(**{p.T_BY: "falis abdulle"}), {"type": p.TYPE_PURCHASE, "amount": 7.25})
+        self.assertEqual(out[p.T_BY], "Falis Abdulle")
+        self.assertEqual(out[p.T_AMOUNT], "19.75")
+        self.assertNotIn(p.T_NOTES, out)
+        self.assertNotIn(p.T_TYPE, out)
+
+    def test_new_items_skips_ones_already_open(self):
+        self.assertEqual(p.new_items(self.existing(), ["Sugar", "Coffee", "coffee"]), ["Coffee"])
+        self.assertEqual(p.new_items(None, ["Sugar"]), ["Sugar"])
+
+    def test_notes_block(self):
+        self.assertEqual(p.notes_block("2026-11-06", "Melissa", "Receipts: x\nCleaner's notes: y"),
+                         "2026-11-06 · Melissa: Receipts: x\n2026-11-06 · Melissa: Cleaner's notes: y")
+
+
 if __name__ == "__main__":
     unittest.main()
