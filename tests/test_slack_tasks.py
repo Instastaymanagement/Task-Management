@@ -479,9 +479,21 @@ class MaintenanceRowTests(unittest.TestCase):
         self.assertEqual(vals["date0"], {"date": "2026-11-10"})
         self.assertEqual(vals["person"], {"personsAndTeams": [{"id": 11, "kind": "person"}]})
         self.assertIn("[slack C1 1760000000.000100]", vals["text_sub"])
+        self.assertNotIn("sub_country", vals)  # the subitems board in this test has no Country column
         row_vals = json.loads(next(v for q, v in calls if "change_multiple_column_values" in q)["vals"])
         self.assertEqual(row_vals["date_mm7ytd1z"], {"date": "2026-11-10"})  # earliest open deadline
         self.assertEqual(row_vals["status"], {"label": "Not done"})
+
+    def test_subitem_gets_country_category_and_property(self):
+        board, calls = self.board({500: self.row()}), []
+        cols = {**self.SUB_COLS, "Country": "sub_country", "Category": "sub_cat", "Property Link": "sub_link"}
+        with mock.patch.object(s, "monday", side_effect=self.fake_monday(calls)), \
+                mock.patch.object(s, "subitem_layout", return_value=(cols, 2)):
+            s.create_maintenance_task(board, task(), {11}, "", [77], "Canada", {77: "1456 Evans Blvd"})
+        vals = json.loads(next(v for q, v in calls if "create_subitem" in q)["vals"])
+        self.assertEqual(vals["sub_country"], {"label": "Canada"})
+        self.assertEqual(vals["sub_cat"], {"label": "Maintenance"})
+        self.assertEqual(vals["sub_link"], {"item_ids": [77]})
 
     def test_first_task_for_a_property_creates_its_row(self):
         board, calls = self.board(), []
