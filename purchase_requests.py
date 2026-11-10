@@ -1,0 +1,328 @@
+#!/usr/bin/env python3
+"""Every 5 minutes: copy cleaners' purchase and supply requests from the General Form to the
+"Purchase Requests" board (Instastay → 📋 Task Hub).
+
+A Field Team Submissions (General Form) item becomes a purchase request when it has any of:
+  - "Purchase Made?" = Yes (the cleaner bought something and needs to be paid back),
+  - "Supplies Needed?" with anything other than "NO RESTOCK NEEDED",
+  - something in "Beddings Needed?" other than "No" / "None" / "N/A",
+  - Form Type "Urgent Maintenance / Supplies Requests".
+
+Each submission gives at most one request, with one subitem per item needed or bought. The request's "Form Item ID" column holds the
+submission's item id, so a submission is never copied twice. Only submissions from the last
+PURCHASE_LOOKBACK_DAYS days are looked at.
+
+Environment:
+  MONDAY_API_TOKEN         monday.com API token (required)
+  DRY_RUN                  "true" to list the requests that would be added without adding them
+  PURCHASE_LOOKBACK_DAYS   how many days of submissions to check (default 7)
+"""
+
+import datetime as dt
+import json
+import os
+import re
+
+from slack_tasks import LOCAL_TZ, POSITION_API_VERSION, log, monday
+
+TARGET_BOARD = 18439221614  # Purchase Requests
+NEW_GROUP = "topics"        # New Requests
+
+# Purchase Requests columns
+T_TYPE = "color_mm8zn7rf"
+T_STATUS = "color_mm8zcyz0"
+T_COUNTRY = "color_mm8zsvsh"
+T_PROPERTY = "text_mm8zvm98"
+T_BY = "text_mm8zznxw"
+T_DATE = "date_mm8zfc06"
+T_NOTES = "long_text_mm8zbne"   # receipts and the cleaner's notes
+T_AMOUNT = "numeric_mm8z3m74"
+T_PRIORITY = "color_mm8z6nce"
+T_SUBMISSION = "link_mm8zjts6"
+T_PROPERTY_LINK = "board_relation_mm8z5e62"
+T_SOURCE = "text_mm8z4dqq"
+SUB_STATUS = "color_mm8zdcgd"   # Status on the subitems board: Needed / Ordered / Done / Not needed
+SUB_NEW_STATUS = "Needed"
+
+# Field Team Submissions boards. Both have the same form columns; dates and property links differ.
+SOURCES = [
+    {"board": 18435476614, "country": "Canada", "properties_board": 18435476437,
+     "date_cols": ["date2j8vd08t", "date_mm8wh5kz"], "relation": "board_relation_mm84399d"},
+    {"board": 18435502755, "country": "USA", "properties_board": 18435507823,
+     "date_cols": ["datee9zspnrl"], "relation": "board_relation_mm843f79"},
+]
+S_PROPERTY = "single_selectp2c2cc7"
+S_FORM_TYPE = "single_selectse0kb4z"
+S_SUPPLIES = "multi_selectamye5ja2"
+S_BEDDING = "short_textffptgktf"
+S_URGENT = "long_textwy74n2rh"
+S_PURCHASED = "single_selectd8mip9p"
+S_ITEMS_PURCHASED = "short_textetxu7mcj"
+S_RECEIPTS = "filen58bgisv"
+S_AMOUNT = "numbervp12wa4c"
+S_PRIORITY = "single_selectrywl034"
+S_NOTES = "short_textm9jrpbyj"
+S_COLUMNS = [S_PROPERTY, S_FORM_TYPE, S_SUPPLIES, S_BEDDING, S_URGENT, S_PURCHASED, S_ITEMS_PURCHASED,
+             S_RECEIPTS, S_AMOUNT, S_PRIORITY, S_NOTES]
+
+NO_RESTOCK = "no restock needed"
+NOTHING_RE = re.compile(r"^(no|nk|nah|nope|none|nothing|nil|n/?a|-+|0|not needed|no need(ed)?|all good|good|ok(ay)?)"
+                        r"[\s.!]*$", re.I)
+URGENT_FORM = "urgent maintenance / supplies"
+PRIORITIES = {"Low", "Medium", "High"}
+ITEM_SPLIT_RE = re.compile(r"\s*(?:[,;\n]+\s*(?:and\s+|&\s*)?|\s+and\s+|\s+&\s+)\s*", re.I)
+
+TYPE_PURCHASE = "Purchase made"
+TYPE_URGENT = "Urgent request"
+TYPE_SUPPLIES = "Supplies needed"
+
+DRY_RUN = os.environ.get("DRY_RUN", "").lower() in ("1", "true", "yes")
+LOOKBACK_DAYS = float(os.environ.get("PURCHASE_LOOKBACK_DAYS") or 7)
+# Submissions for work before this date are never copied (the board starts with November 2026).
+SINCE_DATE = os.environ.get("PURCHASE_SINCE") or "2026-11-01"
+NAME_LIMIT = 90
+
+
+def meaningful(text):
+    text = (text or "").strip()
+    return bool(text) and not NOTHING_RE.match(text)
+
+
+def supplies(text):
+    return [s.strip() for s in (text or "").split(",") if s.strip() and s.strip().lower() != NO_RESTOCK]
+
+
+def split_items(text):
+    """One entry per thing in a free-text list: "Toilet paper, paper towel, and coffee" → 3 items."""
+    out = []
+    for part in ITEM_SPLIT_RE.split(text or ""):
+        part = part.strip(" -•*.").strip()
+        if part and meaningful(part) and part.lower() not in (p.lower() for p in out):
+            out.append(part[:1].upper() + part[1:])
+    return out
+
+
+def parse_request(sub):
+    """The purchase request a submission makes, or None. `sub` maps column ids to their text."""
+    needed = supplies(sub.get(S_SUPPLIES))
+    bedding = (sub.get(S_BEDDING) or "").strip() if meaningful(sub.get(S_BEDDING)) else ""
+    urgent_form = URGENT_FORM in (sub.get(S_FORM_TYPE) or "").lower()
+    urgent = (sub.get(S_URGENT) or "").strip()
+    purchased = (sub.get(S_PURCHASED) or "").strip().lower() == "yes"
+    bought = (sub.get(S_ITEMS_PURCHASED) or "").strip()
+
+    if purchased:
+        kind = TYPE_PURCHASE
+    elif urgent_form and (urgent or needed or bedding):
+        kind = TYPE_URGENT
+    elif needed or bedding or (urgent and meaningful(urgent)):
+        kind = TYPE_SUPPLIES
+    else:
+        return None
+
+    lines = []  # the items themselves go in subitems; Notes keeps receipts and the cleaner's notes
+    receipts = (sub.get(S_RECEIPTS) or "").strip()
+    if receipts:
+        lines.append(f"Receipts: {receipts}")
+    notes = (sub.get(S_NOTES) or "").strip()
+    if meaningful(notes):
+        lines.append(f"Cleaner's notes: {notes}")
+
+    if kind == TYPE_PURCHASE:
+        things = split_items(bought) or ["Items not listed (see receipts)"]
+    else:
+        things = needed + [f"Bedding: {b}" for b in split_items(bedding)] + split_items(urgent)
+
+    summary = bought or ", ".join(needed + ([f"bedding ({bedding})"] if bedding else [])) or urgent
+    summary = " ".join(summary.split())
+    amount = None
+    try:
+        amount = float(sub.get(S_AMOUNT)) if sub.get(S_AMOUNT) not in (None, "") else None
+    except ValueError:
+        pass
+    return {"type": kind, "summary": summary, "details": "\n".join(lines), "amount": amount,
+            "items": things}
+
+
+def item_name(prop, requester=""):
+    """The request's name is just the property; the items are its subitems."""
+    prop = (prop or "").strip()
+    if not prop or prop.lower().startswith("other"):
+        return f"Other property ({requester})" if requester else "Other property"
+    return prop[:NAME_LIMIT]
+
+
+# --------------------------------------------------------------------- properties
+
+def property_match(label, masters):
+    """Properties Master item id for a form label like "Evans 1456" or "Spruce Main 306", or None."""
+    label = (label or "").lower()
+    numbers = re.findall(r"\d+", label)
+    words = [w for w in re.findall(r"[a-z]+", label) if len(w) > 2 and w not in ("unit", "the")]
+    if not numbers or not words:
+        return None
+    hits = [m for m in masters
+            if numbers[0] in re.findall(r"\d+", m["name"].lower()) and words[0] in m["name"].lower()]
+    if len(hits) > 1:  # e.g. Spruce Main / Spruce Upstairs: use every word to narrow it down
+        hits = [m for m in hits if all(w in m["name"].lower() for w in words)]
+    return int(hits[0]["id"]) if len(hits) == 1 else None
+
+
+def master_properties(board_id, cache={}):
+    if board_id not in cache:
+        page = monday("query($id:[ID!]){boards(ids:$id){items_page(limit:500){items{id name}}}}",
+                      {"id": [board_id]})["boards"][0]["items_page"]
+        cache[board_id] = page["items"]
+    return cache[board_id]
+
+
+# ------------------------------------------------------------------------ monday
+
+def existing_sources():
+    """Form item ids already on the Purchase Requests board."""
+    fields = f'items{{column_values(ids:["{T_SOURCE}"]){{text}}}}'
+    page = monday(f"query($id:[ID!]){{boards(ids:$id){{items_page(limit:500){{cursor {fields}}}}}}}",
+                  {"id": [TARGET_BOARD]})["boards"][0]["items_page"]
+    items = list(page["items"])
+    while page.get("cursor"):
+        page = monday(f"query($c:String!){{next_items_page(limit:500, cursor:$c){{cursor {fields}}}}}",
+                      {"c": page["cursor"]})["next_items_page"]
+        items.extend(page["items"])
+    return {(c["text"] or "").strip() for it in items for c in it["column_values"]} - {""}
+
+
+def recent_submissions(source, since):
+    cols = S_COLUMNS + source["date_cols"] + [source["relation"]]
+    fields = """cursor items{id name url created_at
+        column_values(ids:$cols){id text ... on BoardRelationValue{linked_item_ids}}}"""
+    query = f"""query($id:[ID!], $cols:[String!]){{boards(ids:$id){{items_page(limit:100,
+        query_params:{{order_by:[{{column_id:"__creation_log__", direction:desc}}]}}){{{fields}}}}}}}"""
+    page = monday(query, {"id": [source["board"]], "cols": cols})["boards"][0]["items_page"]
+    out = []
+    while True:
+        for it in page["items"]:
+            created = dt.datetime.fromisoformat(it["created_at"].replace("Z", "+00:00"))
+            if created < since:
+                return out
+            out.append(it)
+        if not page.get("cursor"):
+            return out
+        page = monday(f"""query($c:String!, $cols:[String!]){{next_items_page(limit:100, cursor:$c){{{fields}}}}}""",
+                      {"c": page["cursor"], "cols": cols})["next_items_page"]
+
+
+def submission_values(item):
+    values = {}
+    for c in item["column_values"]:
+        values[c["id"]] = c.get("text")
+        if "linked_item_ids" in c:
+            values[c["id"]] = [int(i) for i in c.get("linked_item_ids") or []]
+    return values
+
+
+def submission_day(source, item, sub):
+    """The date the cleaner gave in the form, or the day it was submitted (Toronto time)."""
+    created = dt.datetime.fromisoformat(item["created_at"].replace("Z", "+00:00"))
+    return next((sub[c] for c in source["date_cols"] if sub.get(c)), None) or \
+        created.astimezone(LOCAL_TZ).date().isoformat()
+
+
+def build_values(source, item, sub, req):
+    day = submission_day(source, item, sub)
+    prop = (sub.get(S_PROPERTY) or "").strip()
+    links = sub.get(source["relation"]) or []
+    if not links and prop:
+        match = property_match(prop, master_properties(source["properties_board"]))
+        links = [match] if match else []
+    values = {
+        T_TYPE: {"label": req["type"]},
+        T_STATUS: {"label": "New"},
+        T_COUNTRY: {"label": source["country"]},
+        T_PROPERTY: prop,
+        T_BY: item["name"].strip(),
+        T_DATE: {"date": day},
+        T_NOTES: {"text": req["details"]},
+        T_SUBMISSION: {"url": item["url"], "text": "Form submission"},
+        T_SOURCE: str(item["id"]),
+    }
+    if req["amount"] is not None:
+        values[T_AMOUNT] = str(req["amount"])
+    if sub.get(S_PRIORITY) in PRIORITIES:
+        values[T_PRIORITY] = {"label": sub[S_PRIORITY]}
+    if links:
+        values[T_PROPERTY_LINK] = {"item_ids": links}
+    return values
+
+
+def top_item(group_id=NEW_GROUP):
+    """The item at the top of the group, or None if it's empty."""
+    data = monday("""query($id:[ID!], $group:[String]){boards(ids:$id){groups(ids:$group){
+        items_page(limit:1){items{id}}}}}""", {"id": [TARGET_BOARD], "group": [group_id]})
+    groups = data["boards"][0]["groups"]
+    items = groups[0]["items_page"]["items"] if groups else []
+    return items[0]["id"] if items else None
+
+
+def create_request(name, values):
+    """Create the request at the top of New Requests, so the newest is always first."""
+    variables = {"board": TARGET_BOARD, "group": NEW_GROUP, "name": name, "values": json.dumps(values)}
+    first = top_item()
+    if first:
+        data = monday("""mutation($board:ID!, $group:String!, $name:String!, $values:JSON!, $first:ID!){
+            create_item(board_id:$board, group_id:$group, item_name:$name, column_values:$values,
+                        create_labels_if_missing:false, relative_to:$first, position_relative_method:before_at){id}}""",
+                      {**variables, "first": first}, api_version=POSITION_API_VERSION)
+    else:
+        data = monday("""mutation($board:ID!, $group:String!, $name:String!, $values:JSON!){
+            create_item(board_id:$board, group_id:$group, item_name:$name, column_values:$values,
+                        create_labels_if_missing:false){id}}""", variables)
+    return data["create_item"]["id"]
+
+
+def create_subitems(parent_id, names):
+    """One subitem per thing requested or bought, so each can be ticked off on its own."""
+    values = json.dumps({SUB_STATUS: {"label": SUB_NEW_STATUS}})
+    for name in names:
+        monday("""mutation($parent:ID!, $name:String!, $values:JSON!){
+            create_subitem(parent_item_id:$parent, item_name:$name, column_values:$values,
+                           create_labels_if_missing:false){id}}""",
+               {"parent": parent_id, "name": name[:255], "values": values})
+
+
+def main():
+    now = dt.datetime.now(dt.timezone.utc)
+    since = now - dt.timedelta(days=LOOKBACK_DAYS)
+    done = existing_sources()
+    added = 0
+    # Oldest first: each request goes on top, so the newest submission ends up first.
+    found = []
+    for source in SOURCES:
+        for item in recent_submissions(source, since):
+            sub = submission_values(item)
+            day = submission_day(source, item, sub)
+            if day >= SINCE_DATE:
+                found.append((day, item["created_at"], source, item, sub))
+    found.sort(key=lambda f: f[:2])
+    for _day, _created, source, item, sub in found:
+        if str(item["id"]) in done or item["name"].strip().upper().startswith("TEST"):
+            continue
+        req = parse_request(sub)
+        if not req:
+            continue
+        name = item_name(sub.get(S_PROPERTY), item["name"].strip())
+        values = build_values(source, item, sub, req)
+        if DRY_RUN:
+            log(f"[dry run] {source['country']}: {name} — {req['type']} ({req['summary']}) from {item['name']} ({item['url']})")
+            for thing in req["items"]:
+                log(f"    - {thing}")
+            continue
+        new_id = create_request(name, values)
+        create_subitems(new_id, req["items"])
+        done.add(str(item["id"]))
+        added += 1
+        log(f"Added {name} ({req['type']}) from {item['name']} → item {new_id}")
+    log(f"Purchase requests: {added} added" + (" (dry run)" if DRY_RUN else ""))
+
+
+if __name__ == "__main__":
+    main()

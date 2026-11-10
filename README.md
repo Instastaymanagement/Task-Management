@@ -71,6 +71,18 @@ If a task can't be tied to a country, it's marked Canada. Change `DEFAULT_COUNTR
 
 Host replies in Hospitable and outgoing Quo texts made only of thanks, greetings and "I'll get back to you" lines (e.g. "Thanks for asking. I've received your message and will get back to you.") are shown to Claude as earlier conversation, not as new messages. If they're the only new messages, the run skips the Claude call. A reply with anything else in it, such as dates, a decision or a promise of specific work, is read as normal. Guest messages are always read.
 
+### Purchase requests from the General Form
+
+Every run also copies cleaners' purchase and supply requests from **Field Team Submissions (General Form)** (Canada `18435476614`, USA `18435502755`) to the **Purchase Requests** board (Instastay → 📋 Task Hub, `18439221614`), at the top of **New Requests**, so the group runs newest to oldest. `purchase_requests.py` does this, with no Claude call. A submission counts as a request when it has any of:
+
+| In the form | Request Type |
+|---|---|
+| **Purchase Made?** = Yes | Purchase made (the cleaner bought something and needs to be paid back) |
+| Form Type **Urgent Maintenance / Supplies Requests** | Urgent request |
+| **Supplies Needed?** with anything other than NO RESTOCK NEEDED, or **Beddings Needed?** with anything other than No / None / N/A | Supplies needed |
+
+Each request is named after its property only ("Other property (name)" when the form says Others). The items are listed only as **subitems**, one per supply, bedding item or thing bought, each with its own Status (Needed / Ordered / Done / Not needed), so they can be ticked off one by one. The request also has who asked, the country, the date, the property link, the amount for purchases, the priority, a **Notes** column with receipts and the cleaner's notes, and a link to the form submission. Its Status starts at **New**; set it to Ordered, Done, Reimbursed or Not needed. The **Form Item ID** column stops a submission from being copied twice. Don't delete requests you don't need, mark them **Not needed**: a deleted request from the last 7 days (`PURCHASE_LOOKBACK_DAYS`) would be added again. Submissions whose name starts with "TEST" are skipped, and so is work dated before November 1, 2026 (`PURCHASE_SINCE`).
+
 ### Nightly archive
 
 Every night at 10 pm Toronto time, `.github/workflows/archive-tasks.yml` moves finished tasks from the Task Hub to **Task Hub · Archive** (`18436688447`), into its Completed task group. That's everything in Completed task, plus anything marked Done in another one-off group. Daily Checklist and Weekly Tasks items are never moved. Comments, files, the Country and the property link come along. To preview, run *Archive finished tasks* manually with **dry_run** ticked.
