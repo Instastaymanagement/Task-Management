@@ -82,6 +82,9 @@ UPCOMING_GROUP = "group_mm8kmnww"   # Upcoming Check-in/out Requests
 DUE_GROUP = "group_mm87wps"         # Overdue & Due Today
 # New tasks of these categories go in their own group instead of TASK_GROUP, so they're listed together
 CATEGORY_GROUPS = {"Maintenance": "group_mm8kzgy5", "Claims": "group_mm8m6aaz"}  # Property Maintenance, Claims
+# In Property Maintenance each row is a property and its maintenance tasks are that row's subitems.
+MAINT_GROUP = CATEGORY_GROUPS["Maintenance"]
+NO_PROPERTY = "No property ({country})"   # the row for maintenance tasks not tied to a property
 DONE_STATUS = "Done"
 PROGRESS_STATUS = "Working on it"
 NEW_STATUS = "Not done"
@@ -655,11 +658,13 @@ def board_layout(board_id):
     return cols, groups
 
 
-def board_items(board_id, column_ids):
-    query = """query($id:[ID!], $cols:[String!]){boards(ids:$id){items_page(limit:500){cursor
-        items{id name group{id title} column_values(ids:$cols){id text ... on BoardRelationValue{linked_item_ids}}}}}}"""
-    next_query = """query($cursor:String!, $cols:[String!]){next_items_page(limit:500, cursor:$cursor){cursor
-        items{id name group{id title} column_values(ids:$cols){id text ... on BoardRelationValue{linked_item_ids}}}}}"""
+def board_items(board_id, column_ids, subitems=False):
+    sub = " subitems{column_values{text}}" if subitems else ""
+    fields = f"items{{id name group{{id title}} column_values(ids:$cols){{id text ... on BoardRelationValue{{linked_item_ids}}}}{sub}}}"
+    query = f"""query($id:[ID!], $cols:[String!]){{boards(ids:$id){{items_page(limit:500){{cursor
+        {fields}}}}}}}"""
+    next_query = f"""query($cursor:String!, $cols:[String!]){{next_items_page(limit:500, cursor:$cursor){{cursor
+        {fields}}}}}"""
     page = monday(query, {"id": [board_id], "cols": column_ids})["boards"][0]["items_page"]
     items = list(page["items"])
     while page.get("cursor"):
@@ -681,10 +686,26 @@ def load_board():
     items = board_items(HUB["tasks_board"], [cols["Person"], cols["Status"], cols["Notes/Updates"], cols["Deadline"],
                                              cols[COUNTRY_COLUMN]] + ([link_col] if link_col else []))
     keys, open_tasks, updatable, order = set(), [], {}, {}
-    # Archived tasks still block their source message from creating a task again.
-    for it in board_items(HUB["archive_board"], [cols["Notes/Updates"]]):
-        keys.update(SOURCE_KEY_RE.findall(" ".join(c["text"] or "" for c in it["column_values"])))
+    # Archived tasks (and archived maintenance subitems) still block their source message from
+    # creating a task again.
+    for text in archived_texts(cols["Notes/Updates"]):
+        keys.update(SOURCE_KEY_RE.findall(text))
+    maint = maintenance_rows(cols) if MAINT_GROUP in group_ids else {}
+    for row in maint.values():
+        for sub in row["subs"].values():
+            keys.update(sub["keys"])
+            if sub["status"] != DONE_STATUS:
+                updatable[sub["id"]] = {
+                    "id": sub["id"], "country": row["country"], "name": f"{sub['name']} (at {row['name']})",
+                    "status": sub["status"], "assigned": sub["assigned"] or "nobody",
+                    "deadline": sub["deadline"] or "none",
+                    "notes": " ".join(SOURCE_KEY_RE.sub("", sub["notes"]).split())[:NOTE_PREVIEW],
+                    "from": ", ".join(f"{src} conversation {conv}" for src, conv, _ in sub["keys"]) or "unknown",
+                    "parent": row["id"],
+                }
     for it in items:
+        if int(it["id"]) in maint:
+            continue  # a property row: its subitems are the tasks
         vals = {c["id"]: c["text"] or "" for c in it["column_values"]}
         notes = vals.get(cols["Notes/Updates"], "")
         item_keys = SOURCE_KEY_RE.findall(notes)
@@ -712,7 +733,65 @@ def load_board():
             "group_id": TASK_GROUP, "done_group_id": DONE_GROUP if DONE_GROUP in group_ids else None,
             "upcoming_group_id": UPCOMING_GROUP if UPCOMING_GROUP in group_ids else None,
             "category_group_ids": {c: g for c, g in CATEGORY_GROUPS.items() if g in group_ids},
-            "keys": keys, "open_tasks": open_tasks, "updatable": updatable, "order": order}
+            "keys": keys, "open_tasks": open_tasks, "updatable": updatable, "order": order, "maint": maint}
+
+
+def archived_texts(notes_col):
+    """Notes of every archived task and archived maintenance subitem."""
+    for it in board_items(HUB["archive_board"], [notes_col], subitems=True):
+        yield " ".join(c["text"] or "" for c in it["column_values"])
+        for sub in it.get("subitems") or []:
+            yield " ".join(c["text"] or "" for c in sub["column_values"])
+
+
+def subitem_layout(cols_cache={}):
+    """Column ids of the Task Hub's subitems board by title, and its board id."""
+    if "cols" not in cols_cache:
+        data = monday("""query($id:[ID!]){boards(ids:$id){columns(types:[subtasks]){settings_str}}}""",
+                      {"id": [HUB["tasks_board"]]})
+        settings = json.loads(data["boards"][0]["columns"][0]["settings_str"])
+        sub_board = int(settings["boardIds"][0])
+        cols, _ = board_layout(sub_board)
+        cols_cache.update(cols=cols, board_id=sub_board)
+    return cols_cache["cols"], cols_cache["board_id"]
+
+
+def person_ids(value):
+    try:
+        return [int(p["id"]) for p in (json.loads(value or "{}") or {}).get("personsAndTeams", [])
+                if p.get("kind") == "person"]
+    except (ValueError, TypeError):
+        return []
+
+
+def maintenance_rows(cols):
+    """The property rows in Property Maintenance: {row id: {id, name, country, property, subs}}.
+    subs maps subitem id to {id, name, status, deadline, people, assigned, notes, keys}.
+    Rows without subitems (e.g. a task someone added by hand) aren't property rows."""
+    link_col = cols.get("Property Link", "")
+    data = monday("""query($id:[ID!], $group:[String], $cols:[String!]){boards(ids:$id){groups(ids:$group){
+        items_page(limit:500){items{id name column_values(ids:$cols){id text ... on BoardRelationValue{linked_item_ids}}
+        subitems{id name column_values{id text value column{title}}}}}}}}""",
+                  {"id": [HUB["tasks_board"]], "group": [MAINT_GROUP], "cols": [cols[COUNTRY_COLUMN], link_col]})
+    groups = data["boards"][0]["groups"]
+    rows = {}
+    for it in (groups[0]["items_page"]["items"] if groups else []):
+        if not it.get("subitems"):
+            continue
+        country = next((c["text"] for c in it["column_values"] if c["id"] == cols[COUNTRY_COLUMN]), "") or "Unknown"
+        linked = next((c.get("linked_item_ids") for c in it["column_values"] if c["id"] == link_col), None) or []
+        subs = {}
+        for sub in it["subitems"]:
+            by_title = {c["column"]["title"]: c for c in sub["column_values"]}
+            text = lambda t: ((by_title.get(t) or {}).get("text") or "").strip()  # noqa: E731
+            notes = text("Notes/Updates")
+            subs[int(sub["id"])] = {"id": int(sub["id"]), "name": sub["name"], "status": text("Status"),
+                                    "deadline": text("Deadline"), "assigned": text("Person"),
+                                    "people": person_ids((by_title.get("Person") or {}).get("value")),
+                                    "notes": notes, "keys": SOURCE_KEY_RE.findall(notes)}
+        rows[int(it["id"])] = {"id": int(it["id"]), "name": it["name"], "country": country,
+                               "property": int(linked[0]) if linked else None, "subs": subs}
+    return rows
 
 
 def regroup_moves(order):
@@ -900,8 +979,112 @@ def create_item(board, task, valid_user_ids, source_line, property_ids=(), count
     return item_id
 
 
+def maintenance_row(board, country, property_ids, property_names):
+    """The Property Maintenance row for this property (created if there isn't one yet)."""
+    prop = int(property_ids[0]) if property_ids else None
+    name = (property_names.get(prop) or "").split(" - ")[0].strip() if prop else ""
+    name = name or NO_PROPERTY.format(country=country)
+    for row in board["maint"].values():
+        if row["country"] == country and (row["property"] == prop if prop else
+                                          (not row["property"] and row["name"] == name)):
+            return row
+    cols = board["cols"]
+    vals = {cols["Status"]: {"label": NEW_STATUS}, cols[COUNTRY_COLUMN]: {"label": country}}
+    if CATEGORY_COLUMN in cols:
+        vals[cols[CATEGORY_COLUMN]] = {"label": "Maintenance"}
+    if prop and "Property Link" in cols:
+        vals[cols["Property Link"]] = {"item_ids": [prop]}
+    data = monday("""mutation($board:ID!, $group:String, $name:String!, $vals:JSON!){
+        create_item(board_id:$board, group_id:$group, item_name:$name, column_values:$vals){id}}""",
+                  {"board": board["board_id"], "group": MAINT_GROUP, "name": name[:255], "vals": json.dumps(vals)})
+    row = {"id": int(data["create_item"]["id"]), "name": name, "country": country, "property": prop, "subs": {}}
+    board["maint"][row["id"]] = row
+    return row
+
+
+def create_maintenance_task(board, task, valid_user_ids, source_line, property_ids, country, property_names):
+    """Add a maintenance task as a subitem of its property's row in Property Maintenance."""
+    row = maintenance_row(board, country, property_ids, property_names)
+    sub_cols, _ = subitem_layout()
+    notes = build_notes(task, source_line)
+    vals = {sub_cols["Status"]: {"label": NEW_STATUS}, sub_cols["Notes/Updates"]: notes}
+    people = [i for i in dict.fromkeys(task["assignee_ids"]) if i in valid_user_ids]
+    if people:
+        vals[sub_cols["Person"]] = {"personsAndTeams": [{"id": i, "kind": "person"} for i in people]}
+    deadline = task.get("deadline") or ""
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", deadline):
+        vals[sub_cols["Deadline"]] = {"date": deadline}
+    data = monday("""mutation($parent:ID!, $name:String!, $vals:JSON!){create_subitem(parent_item_id:$parent,
+        item_name:$name, column_values:$vals, create_labels_if_missing:true){id}}""",
+                  {"parent": row["id"], "name": task["title"][:255], "vals": json.dumps(vals)})
+    sub_id = int(data["create_subitem"]["id"])
+    row["subs"][sub_id] = {"id": sub_id, "name": task["title"], "status": NEW_STATUS, "deadline": deadline,
+                           "people": people, "assigned": "", "notes": notes, "keys": SOURCE_KEY_RE.findall(notes)}
+    sync_maintenance_row(board, row)
+    return sub_id
+
+
+def row_summary(row):
+    """The row's Status, Deadline and people from its open subitems: (status, deadline, people)."""
+    open_subs = [s for s in row["subs"].values() if s["status"] != DONE_STATUS]
+    if not open_subs:
+        return DONE_STATUS, None, []
+    status = NEW_STATUS if all(s["status"] in ("", NEW_STATUS) for s in open_subs) else PROGRESS_STATUS
+    deadlines = sorted(s["deadline"][:10] for s in open_subs if re.fullmatch(r"\d{4}-\d{2}-\d{2}", s["deadline"][:10]))
+    people = list(dict.fromkeys(p for s in open_subs for p in s["people"]))
+    return status, (deadlines[0] if deadlines else None), people
+
+
+def sync_maintenance_row(board, row):
+    """Keep the property row's Status, Deadline and Person in line with its open subitems. When every
+    subitem is Done the row is Done and goes to Completed task (archived that night with its subitems)."""
+    status, deadline, people = row_summary(row)
+    cols = board["cols"]
+    vals = {cols["Status"]: {"label": status},
+            cols["Person"]: {"personsAndTeams": [{"id": i, "kind": "person"} for i in people]}}
+    if deadline:
+        vals[cols["Deadline"]] = {"date": deadline}
+    monday("""mutation($board:ID!, $item:ID!, $vals:JSON!){
+        change_multiple_column_values(board_id:$board, item_id:$item, column_values:$vals){id}}""",
+           {"board": board["board_id"], "item": row["id"], "vals": json.dumps(vals)})
+    if status == DONE_STATUS and board.get("done_group_id"):
+        monday("mutation($item:ID!, $group:String!){move_item_to_group(item_id:$item, group_id:$group){id}}",
+               {"item": row["id"], "group": board["done_group_id"]})
+        board["maint"].pop(row["id"], None)
+
+
+def apply_subitem_update(board, target, action, comment, deadline):
+    row = board["maint"].get(target["parent"])
+    sub_cols, sub_board = subitem_layout()
+    vals = {}
+    if action == "done":
+        vals[sub_cols["Status"]] = {"label": DONE_STATUS}
+    elif action == "in_progress":
+        vals[sub_cols["Status"]] = {"label": PROGRESS_STATUS}
+    if deadline:
+        vals[sub_cols["Deadline"]] = {"date": deadline}
+    if vals:
+        monday("""mutation($board:ID!, $item:ID!, $vals:JSON!){change_multiple_column_values(board_id:$board,
+            item_id:$item, column_values:$vals, create_labels_if_missing:true){id}}""",
+               {"board": sub_board, "item": target["id"], "vals": json.dumps(vals)})
+    monday("mutation($item:ID!, $body:String!){create_update(item_id:$item, body:$body){id}}",
+           {"item": target["id"], "body": comment.strip()})
+    if row and target["id"] in row["subs"] and vals:
+        sub = row["subs"][target["id"]]
+        if action == "done":
+            sub["status"] = DONE_STATUS
+        elif action == "in_progress":
+            sub["status"] = PROGRESS_STATUS
+        if deadline:
+            sub["deadline"] = deadline
+        sync_maintenance_row(board, row)
+
+
 def apply_task_update(board, item_id, action, comment, deadline):
     """Change a task's status/group/deadline and leave a comment saying why."""
+    target = board.get("updatable", {}).get(item_id) or {}
+    if target.get("parent"):
+        return apply_subitem_update(board, target, action, comment, deadline)
     cols, vals = board["cols"], {}
     if action == "done":
         vals[cols["Status"]] = {"label": DONE_STATUS}
@@ -1151,7 +1334,10 @@ def main():
         else:
             link = permalink_for(team_url, task["source_conversation"], task["source_message"])
             source_line = f"Slack: {link}" if link else ""
-        item_id = create_item(board, task, valid_ids, source_line, prop_ids, country, group_id)
+        if group_id == MAINT_GROUP and group_id in board["category_group_ids"].values():
+            item_id = create_maintenance_task(board, task, valid_ids, source_line, prop_ids, country, prop_names)
+        else:
+            item_id = create_item(board, task, valid_ids, source_line, prop_ids, country, group_id)
         created += 1
         log(f"+ {label} (item {item_id})")
         report.append(f"ADDED {label}")
