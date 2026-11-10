@@ -39,6 +39,16 @@ jobs:
       - name: Run tests
         run: python -m unittest discover -s tests
 
+      # Cleaners' purchase and supply requests from the General Form → Purchase Requests board.
+      # A failure here doesn't stop the task scan below.
+      - name: Copy purchase requests from the General Form
+        continue-on-error: true
+        env:
+          MONDAY_API_TOKEN: ${{ secrets.MONDAY_API_TOKEN }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'true' || 'false' }}
+          PURCHASE_LOOKBACK_DAYS: "7"
+        run: python purchase_requests.py
+
       # The last-run checkpoint lives in the Actions cache between runs.
       - name: Restore checkpoint
         uses: actions/cache/restore@v5
