@@ -57,6 +57,24 @@ class ParseRequestTests(unittest.TestCase):
         self.assertLessEqual(len(p.item_name("Evans 1456", req)), p.NAME_LIMIT)
 
 
+class SplitItemsTests(unittest.TestCase):
+    def test_split(self):
+        self.assertEqual(p.split_items("Toilet paper, paper towel, and coffee"), ["Toilet paper", "Paper towel", "Coffee"])
+        self.assertEqual(p.split_items("Fabreeze and door mat"), ["Fabreeze", "Door mat"])
+        self.assertEqual(p.split_items("Toilet papers \nBody wash"), ["Toilet papers", "Body wash"])
+        self.assertEqual(p.split_items("$20 cash to wash the laundry"), ["$20 cash to wash the laundry"])
+        self.assertEqual(p.split_items(""), [])
+
+    def test_request_items(self):
+        req = p.parse_request(sub(form=CLEANING, supplies="Toilet paper, Shampoo, NO RESTOCK NEEDED",
+                                  bedding="Queen duvet cover"))
+        self.assertEqual(req["items"], ["Toilet paper", "Shampoo", "Bedding: Queen duvet cover"])
+        req = p.parse_request(sub(form="Service", purchased="Yes", bought="Dish soap, dish rack base, laundry soap"))
+        self.assertEqual(req["items"], ["Dish soap", "Dish rack base", "Laundry soap"])
+        req = p.parse_request(sub(form=URGENT, urgent="Dish pods for dishwasher"))
+        self.assertEqual(req["items"], ["Dish pods for dishwasher"])
+
+
 class PropertyMatchTests(unittest.TestCase):
     def test_matches(self):
         self.assertEqual(p.property_match("Evans 1456", CANADA), 1)

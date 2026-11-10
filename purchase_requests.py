@@ -8,7 +8,7 @@ A Field Team Submissions (General Form) item becomes a purchase request when it 
   - something in "Beddings Needed?" other than "No" / "None" / "N/A",
   - Form Type "Urgent Maintenance / Supplies Requests".
 
-Each submission gives at most one request. The request's "Form Item ID" column holds the
+Each submission gives at most one request, with one subitem per item needed or bought. The request's "Form Item ID" column holds the
 submission's item id, so a submission is never copied twice. Only submissions from the last
 PURCHASE_LOOKBACK_DAYS days are looked at.
 
@@ -41,6 +41,8 @@ T_PRIORITY = "color_mm8z6nce"
 T_SUBMISSION = "link_mm8zjts6"
 T_PROPERTY_LINK = "board_relation_mm8z5e62"
 T_SOURCE = "text_mm8z4dqq"
+SUB_STATUS = "color_mm8zdcgd"   # Status on the subitems board: Needed / Ordered / Done / Not needed
+SUB_NEW_STATUS = "Needed"
 
 # Field Team Submissions boards. Both have the same form columns; dates and property links differ.
 SOURCES = [
@@ -68,6 +70,7 @@ NOTHING_RE = re.compile(r"^(no|nope|none|nothing|nil|n/?a|-+|0|not needed|no nee
                         r"[\s.!]*$", re.I)
 URGENT_FORM = "urgent maintenance / supplies"
 PRIORITIES = {"Low", "Medium", "High"}
+ITEM_SPLIT_RE = re.compile(r"\s*(?:[,;\n]+\s*(?:and\s+|&\s*)?|\s+and\s+|\s+&\s+)\s*", re.I)
 
 TYPE_PURCHASE = "Purchase made"
 TYPE_URGENT = "Urgent request"
@@ -85,6 +88,16 @@ def meaningful(text):
 
 def supplies(text):
     return [s.strip() for s in (text or "").split(",") if s.strip() and s.strip().lower() != NO_RESTOCK]
+
+
+def split_items(text):
+    """One entry per thing in a free-text list: "Toilet paper, paper towel, and coffee" → 3 items."""
+    out = []
+    for part in ITEM_SPLIT_RE.split(text or ""):
+        part = part.strip(" -•*.").strip()
+        if part and meaningful(part) and part.lower() not in (p.lower() for p in out):
+            out.append(part[:1].upper() + part[1:])
+    return out
 
 
 def parse_request(sub):
@@ -121,6 +134,11 @@ def parse_request(sub):
     if meaningful(notes):
         lines.append(f"Cleaner's notes: {notes}")
 
+    if kind == TYPE_PURCHASE:
+        things = split_items(bought)
+    else:
+        things = needed + [f"Bedding: {b}" for b in split_items(bedding)] + split_items(urgent)
+
     summary = bought or ", ".join(needed + ([f"bedding ({bedding})"] if bedding else [])) or urgent
     summary = " ".join(summary.split())
     amount = None
@@ -128,7 +146,8 @@ def parse_request(sub):
         amount = float(sub.get(S_AMOUNT)) if sub.get(S_AMOUNT) not in (None, "") else None
     except ValueError:
         pass
-    return {"type": kind, "summary": summary, "details": "\n".join(lines), "amount": amount}
+    return {"type": kind, "summary": summary, "details": "\n".join(lines), "amount": amount,
+            "items": things}
 
 
 def item_name(prop, req):
@@ -246,6 +265,16 @@ def create_request(name, values):
     return data["create_item"]["id"]
 
 
+def create_subitems(parent_id, names):
+    """One subitem per thing requested or bought, so each can be ticked off on its own."""
+    values = json.dumps({SUB_STATUS: {"label": SUB_NEW_STATUS}})
+    for name in names:
+        monday("""mutation($parent:ID!, $name:String!, $values:JSON!){
+            create_subitem(parent_item_id:$parent, item_name:$name, column_values:$values,
+                           create_labels_if_missing:false){id}}""",
+               {"parent": parent_id, "name": name[:255], "values": values})
+
+
 def main():
     now = dt.datetime.now(dt.timezone.utc)
     since = now - dt.timedelta(days=LOOKBACK_DAYS)
@@ -263,8 +292,11 @@ def main():
             values = build_values(source, item, sub, req)
             if DRY_RUN:
                 log(f"[dry run] {source['country']}: {name} — {req['type']} from {item['name']} ({item['url']})")
+                for thing in req["items"]:
+                    log(f"    - {thing}")
                 continue
             new_id = create_request(name, values)
+            create_subitems(new_id, req["items"])
             done.add(str(item["id"]))
             added += 1
             log(f"Added {name} ({req['type']}) from {item['name']} → item {new_id}")
