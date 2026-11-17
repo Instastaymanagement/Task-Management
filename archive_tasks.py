@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Every night at 10 pm (Toronto): move finished tasks off the Task Hub board.
+"""Every night from 10 pm (Toronto): move finished tasks off the Task Hub board.
 
 Each item on the Task Hub that is in the "Completed task" group, or is marked Done in a
 one-off group, is moved to the "Task Hub · Archive" board, into its "Completed task" group.
@@ -13,7 +13,9 @@ slack_tasks.py, so a message that already produced a task never produces another
 Environment:
   MONDAY_API_TOKEN  monday.com API token (required)
   DRY_RUN           "true" to list what would be moved without moving it
-  FORCE             "true" to run at any hour (scheduled runs only act at 10 pm Toronto time)
+  FORCE             "true" to run at any hour
+  ARCHIVE_UNTIL_HOUR  without FORCE, act from 10 pm Toronto time until this hour the next morning
+                    (default 9, because GitHub starts the nightly run hours late; 0 = only 10 pm-midnight)
 """
 
 import datetime as dt
@@ -24,6 +26,11 @@ from slack_tasks import (COUNTRY_COLUMN, DONE_GROUP, DONE_STATUS, HUB, LOCAL_TZ,
                          board_layout, log, monday)
 
 ARCHIVE_HOUR = 22
+
+
+def in_archive_window(local, until_hour):
+    """10 pm to midnight, or a late nightly run before until_hour the next morning."""
+    return local.hour >= ARCHIVE_HOUR or local.hour < until_hour
 
 
 def relation_ids(item, column_id):
@@ -95,10 +102,12 @@ def main():
         sys.exit("Missing required environment variable MONDAY_API_TOKEN")
     dry_run = os.environ.get("DRY_RUN", "").lower() in ("1", "true", "yes")
     force = os.environ.get("FORCE", "").lower() in ("1", "true", "yes")
+    until_hour = int(os.environ.get("ARCHIVE_UNTIL_HOUR") or 9)
     local = dt.datetime.now(LOCAL_TZ)
-    # GitHub cron is UTC, so the workflow is scheduled for both 10 pm EDT and 10 pm EST.
-    if not force and local.hour != ARCHIVE_HOUR:
-        log(f"It's {local:%H:%M} in Toronto, not {ARCHIVE_HOUR}:00; nothing to do.")
+    # The 5-minute task scan archives from 10 pm to midnight. GitHub's own nightly timer is a
+    # backup; it often starts hours late, so it may still act in the early morning.
+    if not force and not in_archive_window(local, until_hour):
+        log(f"It's {local:%H:%M} in Toronto, outside {ARCHIVE_HOUR}:00-{until_hour:02d}:00; nothing to do.")
         return
     report = archive(dry_run)
     summary = f"{sum(1 for r in report if r.startswith(('ARCHIVED', 'WOULD')))} finished task(s) " \
