@@ -78,6 +78,16 @@ jobs:
           SLACK_CHANNELS: ""  # e.g. "maintenance,cleaning-ops,team" to limit the scan
         run: python slack_tasks.py
 
+      # Nightly archive: from 10 pm to midnight Toronto, move finished tasks to Task Hub · Archive.
+      # Runs here because this workflow is started on time; GitHub's nightly timer often runs hours late.
+      - name: Move finished tasks to Task Hub · Archive
+        continue-on-error: true
+        env:
+          MONDAY_API_TOKEN: ${{ secrets.MONDAY_API_TOKEN }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'true' || 'false' }}
+          ARCHIVE_UNTIL_HOUR: "0"
+        run: python archive_tasks.py
+
       - name: Save checkpoint
         if: success() && hashFiles('state/slack_state.json') != ''
         uses: actions/cache/save@v5

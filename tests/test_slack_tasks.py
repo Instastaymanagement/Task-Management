@@ -432,6 +432,19 @@ class ArchiveTests(unittest.TestCase):
             items = a.finished_items(1, "status", "rel", "country")
         self.assertEqual([(i["id"], i["properties"], i["country"]) for i in items], [(1, [77], "Canada"), (2, [], "?")])
 
+    def test_archive_window(self):
+        import archive_tasks as a
+        at = lambda h, m=0: s.dt.datetime(2026, 11, 17, h, m, tzinfo=s.LOCAL_TZ)  # noqa: E731
+        # The late GitHub nightly run (e.g. 6:23 am) still archives; daytime runs don't.
+        self.assertTrue(a.in_archive_window(at(6, 23), 9))
+        self.assertTrue(a.in_archive_window(at(22, 5), 9))
+        self.assertFalse(a.in_archive_window(at(9), 9))
+        self.assertFalse(a.in_archive_window(at(21, 59), 9))
+        # The 5-minute scan only archives from 10 pm to midnight.
+        self.assertTrue(a.in_archive_window(at(23, 55), 0))
+        self.assertFalse(a.in_archive_window(at(0, 5), 0))
+        self.assertFalse(a.in_archive_window(at(6, 23), 0))
+
 
 class MaintenanceRowTests(unittest.TestCase):
     SUB_COLS = {"Person": "person", "Status": "status", "Deadline": "date0", "Notes/Updates": "text_sub"}

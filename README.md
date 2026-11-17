@@ -93,7 +93,7 @@ Each request is named after its property only ("Other property (name)" when the 
 
 ### Nightly archive
 
-Every night at 10 pm Toronto time, `.github/workflows/archive-tasks.yml` moves finished tasks from the Task Hub to **Task Hub · Archive** (`18436688447`), into its Completed task group. That's everything in Completed task, plus anything marked Done in another one-off group. Daily Checklist and Weekly Tasks items are never moved. Comments, files, the Country and the property link come along. To preview, run *Archive finished tasks* manually with **dry_run** ticked.
+Every night from 10 pm to midnight Toronto time, the task scan (`.github/workflows/slack-tasks.yml`) moves finished tasks from the Task Hub to **Task Hub · Archive** (`18436688447`), into its Completed task group. That's everything in Completed task, plus anything marked Done in another one-off group. Daily Checklist and Weekly Tasks items are never moved. Comments, files, the Country and the property link come along. GitHub's own nightly timer (`.github/workflows/archive-tasks.yml`) is a backup; it often starts hours late, so it still acts until 9 am Toronto time. To preview, run *Archive finished tasks* manually with **dry_run** ticked.
 
 ## Setup
 

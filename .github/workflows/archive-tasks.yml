@@ -2,8 +2,9 @@ name: Archive finished tasks
 
 on:
   schedule:
-    # 10 pm Toronto: 02:00 UTC in summer (EDT), 03:00 UTC in winter (EST).
-    # Both are scheduled; the script only acts during the 10 pm hour in Toronto.
+    # Backup for the archive step in slack-tasks.yml, which runs it from 10 pm to midnight Toronto.
+    # 10 pm Toronto: 02:00 UTC in summer (EDT), 03:00 UTC in winter (EST). GitHub often starts these
+    # hours late, so the script acts from 10 pm until 9 am Toronto time.
     - cron: "0 2 * * *"
     - cron: "0 3 * * *"
   workflow_dispatch:
